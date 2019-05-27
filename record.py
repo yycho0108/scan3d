@@ -1,3 +1,4 @@
+#!/usr/bin/env python2
 import numpy as np
 
 class NDRecord(object):
@@ -50,6 +51,9 @@ class NDRecord(object):
     @property
     def dtype(self):
         return self.dtype_
+
+    def help(self):
+        print(0, self.dtype_)
 
 class DictRecord(object):
     """
@@ -129,6 +133,7 @@ def test_ndrec():
         y.append((str(i), i, i+0.1))
 
     print y.data[-2:]
+    y.help()
 
 def main():
     #test_dictrec()

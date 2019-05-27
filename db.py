@@ -1,6 +1,12 @@
+#!/usr/bin/env python2
 import numpy as np
 import cv2
 from record import NDRecord
+from collections import namedtuple
+
+Feature = namedtuple('Feature',
+        ['kpt', 'dsc', 'pt'],
+        )
 
 class DB(object):
     """
@@ -35,20 +41,13 @@ class DB(object):
             ('pose'  , np.float32 , 15)    ,
             ('cov'   , np.float32 , (15, 15)) ,
             ('is_kf' , np.bool    , 1)     ,
+            ('feat'   , Feature     , 1)
             ])
         self.landmark_ = NDRecord([
             ('index' , np.int32   , 1)     ,
             ('dsc'   , dsc_t      , dsc_s) ,
             ('pos'   , np.float32 , 3)     ,
             ])
-
-        self.observation_ = []
-
-        #self.observation_ = NDRecord([
-        #    ('frame_id'    , np.int32   , 1) ,
-        #    ('landmark_id' , np.int32   , 1) ,
-        #    ('point'       , np.float32 , 2) ,
-        #    ])
 
         # current frame state
         self.state_ = {
@@ -66,10 +65,12 @@ class DB(object):
     @property
     def state(self):
         return self.state_
-    @property
-    def observation(self):
-        return self.observation_
 
+    @property
+    def keyframe(self):
+        kf_idx = np.nonzero(self.frame['is_kf'])[0]
+        print('keyframe index : {}'.format(kf_idx))
+        return self.frame[kf_idx]
 
 def main():
     ex = cv2.ORB_create()
