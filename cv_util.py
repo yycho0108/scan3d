@@ -14,7 +14,7 @@ def H(*args, **kwargs):
 def E(*args, **kwargs):
     """ wrap cv2.findEssentialMat() wrapper """
     # WARNING : cv2.findEssentialMat()
-    # sometimes fails and raises and Error.
+    # sometimes fails and raises an Error.
     e, msk = cv2.findEssentialMat(
             *args, **kwargs)
     if msk is not None:
@@ -66,12 +66,13 @@ class Reconstructor(object):
                 K=K
                 )
         self.crit_ = dict(
-                z_min = np.finfo(np.float64).eps,
-                z_max = np.inf,
-                e_max = 1.0,
+                z_min = np.finfo(np.float64).eps, # minimum z-depth
+                z_max = np.inf, # max z-depth
+                e_max = 1.0, # max reprojection error
                 f_max = 0.99998, # max **cosine** parallax to be considered finite
                 t_min = 64, # minimum number of triangulated points
-                p_min = np.deg2rad(1.0) # minimum parallax to accept solution
+                p_min = np.deg2rad(1.0), # minimum parallax to accept solution
+                u_max = 0.7 # min ratio by which `unique` xfm must surpass alternatives
                 )
 
     def E(_):
@@ -219,7 +220,7 @@ class Reconstructor(object):
 
         # determine whether to accept the result
         n_pt = len(data['pt1'])
-        n_similar = np.sum(np.greater(n_good, n_best*0.7)) # << TODO : MAGIC 0.7 ratio
+        n_similar = np.sum(np.greater(n_good, n_best*crit['u_max']))
         min_good = np.maximum(0.7*n_pt, crit['t_min']) # << TODO : MAGIC 0.5 ratio
 
         # p_det guarantees
