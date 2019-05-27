@@ -15,6 +15,8 @@ from tf import transformations as tx
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+from reconstructor import Reconstructor
+
 # use recorded configuration
 # avoid cluttering global namespace
 def _CFG_K():
@@ -126,7 +128,7 @@ class Pipeline(object):
             
             #E, msk = cvu.E(pt1m, pt0m, self.K_)
             #_, R, t, msk = cv2.recoverPose(E, pt1m, pt0m, self.K_)
-            suc = cvu.Reconstructor(pt0m, pt1m, self.K_).compute(data=data)
+            suc = Reconstructor(pt0m, pt1m, self.K_).compute(data=data)
             print('suc?', suc)
             if not suc:
                 return
