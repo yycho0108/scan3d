@@ -8,7 +8,12 @@ class NDRecord(object):
     """
     C0=8
     def __init__(self, dtype, capacity=C0):
-        self.dtype_ = np.dtype(dtype)
+        dtype = np.dtype(dtype)
+        # assert protected attribute names
+        # for kwd in ['dtype_', 'size_', 'cap_', 'data_']:
+        #     assert(kwd not in dtype.names)
+
+        self.dtype_ = dtype
         self.size_ = 0
         self.cap_ = capacity
         self.data_ = np.empty(self.cap_, dtype=self.dtype_)
@@ -22,6 +27,9 @@ class NDRecord(object):
         data = self.data_
         self.data_ = np.empty(shape=self.cap_, dtype=self.dtype_)
         self.data_[:self.size_] = data
+
+        #for k in self.dtype_.names:
+        #    setattr(self, k, self.data_[k])
 
     def append(self, rec):
         if self.size_ >= self.cap_:

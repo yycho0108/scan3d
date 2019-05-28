@@ -16,6 +16,7 @@ from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 from reconstructor import Reconstructor
+from reader.advio import AdvioReader
 
 # use recorded configuration
 # avoid cluttering global namespace
@@ -52,15 +53,15 @@ CFG = dict(
         )
 
 class Pipeline(object):
-    def __init__(self):
+    def __init__(self, cfg):
+        self.cfg_       = cfg
         self.db_        = None
         self.extractor_ = cv2.ORB_create(1024)
         self.matcher_   = Matcher(ex=self.extractor_)
-        self.tracker_   = Tracker(pLK=CFG['pLK'])
+        self.tracker_   = Tracker(pLK=cfg['pLK'])
         self.kf_        = build_ekf()
-        self.K_         = CFG['scale'] * CFG['camera_matrix']
+        self.K_         = cfg['scale'] * cfg['camera_matrix']
         self.K_[2,2] = 1.0
-        print(self.K_)
 
     def initialize(self, img):
         ex       = self.extractor_
@@ -81,8 +82,8 @@ class Pipeline(object):
             P = self.kf_.P
         else:
             # "initial guess"
-            x = np.zeros(CFG['state_size'])
-            P = 1e-6 * np.eye(CFG['state_size'])
+            x = np.zeros(self.cfg_['state_size'])
+            P = 1e-6 * np.eye(self.cfg_['state_size'])
 
         # automatic index assignment
         # WARN : add_frame() should NOT be called multiple times!
@@ -108,13 +109,17 @@ class Pipeline(object):
             self.db_.state_['track'] = cv2.KeyPoint.convert(kpt)
         else:
             # populate frame
-            print('\t\tcurrent index : {}'.format(self.db_.frame.size))
+            #print('\t\tcurrent index : {}'.format(self.db_.frame.size))
             self.add_frame(img, prv=self.db_.frame[-1], dt=dt)
 
             # fetch prv+cur frames
             #frame0 = self.db_.frame[-2]
             frame0 = self.db_.keyframe[-1] # last **keyframe**
             frame1 = self.db_.frame[-1]
+
+            #print('target pair : {}-{}'.format(
+            #    frame0['index'],
+            #    frame1['index']))
 
             # process ...
             img0, img1   = frame0['image'], frame1['image']
@@ -128,10 +133,21 @@ class Pipeline(object):
             
             #E, msk = cvu.E(pt1m, pt0m, self.K_)
             #_, R, t, msk = cv2.recoverPose(E, pt1m, pt0m, self.K_)
-            suc = Reconstructor(pt0m, pt1m, self.K_).compute(data=data)
-            print('suc?', suc)
+            suc, det = Reconstructor(pt0m, pt1m, self.K_).compute(data=data)
+            #print('suc?', suc)
+
             if not suc:
+                # unsuccessful frame-to-frame reconstruction
+                #print('\t det : {}'.format(det))
+                if not det['num_pts']:
+                    # condition: `tracking lost`
+                    # BEFORE sufficient parallax was observed.
+                    # need to reset the reference frame.
+                    print('\t -- reset keyframe')
+                    # reset keyframe
+                    frame1['is_kf'] = True
                 return
+
             frame1['is_kf'] = True # TODO : not really keyframe right now -- just reference frame
 
             #cv2.imshow('img0', img0)
@@ -154,6 +170,9 @@ class Pipeline(object):
             #print('d0', np.median(pt_R3_0[..., 2]) )
             #print('d1', np.median(pt_R3_1[..., 2]) )
             print('R', np.rad2deg(tx.euler_from_matrix(R)))
+            print('frame pair : {}-{}'.format(
+                frame0['index'],
+                frame1['index']))
 
             viz0 = img0 #cv2.drawKeypoints(img0, feat0.kpt, None)
             viz1 = img1 #cv2.drawKeypoints(img1, feat1.kpt, None)
@@ -166,25 +185,32 @@ class Pipeline(object):
             #self.db_.state_['track'] = t_pt[t_idx]
             
 def main():
-    pl  = Pipeline()
-    src = './scan_20190212-233625.h264'
-    #src = '/tmp/tmp.mp4'
-    cap = cv2.VideoCapture(src)
-    dt = (1.0 / 25.0) # (??)
+    #src = './scan_20190212-233625.h264'
+    #reader = CVCameraReader(src)
+    root = '/media/ssd/datasets/ADVIO'
+    reader = AdvioReader(root)
+
+    # update configuration based on input
+    cfg = dict(CFG)
+    cfg['camera_matrix'] = reader.meta_['K']
+
+    pl  = Pipeline(cfg=cfg)
     cv2.namedWindow('viz', cv2.WINDOW_NORMAL)
-    cnt = 0
+    prv = 0.0
     while True:
-        res, img = cap.read()
-        cnt += 1
-        if(cnt <= 3):
-            continue
-        if not res: break
+        suc, idx, stamp, img = reader.read()
+        dt  = (stamp - prv)
+        prv = stamp
+        cv2.imshow('img', img)
+        #if(idx <= 3):
+        #    continue
+        if not suc: break
         img = cv2.resize(img, None, fx=CFG['scale'], fy=CFG['scale'])
         data = {}
         pl.process(img, dt, data)
         if 'viz' in data:
             cv2.imshow('viz', data['viz'])
-        k = cv2.waitKey(0)
+        k = cv2.waitKey(10)
         if k in [27, ord('q')]: break
 
         #try:

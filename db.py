@@ -69,7 +69,7 @@ class DB(object):
     @property
     def keyframe(self):
         kf_idx = np.nonzero(self.frame['is_kf'])[0]
-        print('keyframe index : {}'.format(kf_idx))
+        #print('keyframe index : {}'.format(kf_idx))
         return self.frame[kf_idx]
 
 def main():

@@ -112,6 +112,9 @@ class Reconstructor(object):
         msk_inf = ( _['cospar'] >= f_max ) # == points at `infinity`
         z0, z1 = cld0[:,2], cld1[:,2]
 
+        # compute parallax cache
+        # _['parallax']
+
         # collect conditions
         msks = [
                 # essential matrix consistency check
@@ -186,7 +189,7 @@ class Reconstructor(object):
         # determine whether to accept the result
         n_pt = len(data['pt1'])
         n_similar = np.sum(np.greater(n_good, n_best*crit['u_max']))
-        min_good = np.maximum(0.7*n_pt, crit['t_min']) # << TODO : MAGIC 0.5 ratio
+        min_good = np.maximum(0.5*n_pt, crit['t_min']) # << TODO : MAGIC ratio
 
         # p_det guarantees
         # at least `t_min` parallax values
@@ -195,30 +198,31 @@ class Reconstructor(object):
         # below is a somewhat less efficient version 
         # but better readibility
         n_pgood = np.sum(data['cospar'] <= np.cos(crit['p_min']))
-        p_det  = (n_pgood >= crit['t_min'])
 
+        p_det  = (n_pgood >= crit['t_min'])
         # below is an efficient(?) version
         # but with worse readibility (from ORB-SLAM)
-        # if n_best <= crit['t_min']:
-        #     p_det = data['parallax'].min() >= crit['p_min']
-        # else:
-        #     p_det = np.sort(data['parallax'])[-crit['t_min']] >= crit['p_min']
+        #if n_best <= crit['t_min']:
+        #    p_det = data['parallax'].min() >= crit['p_min']
+        #else:
+        #    p_det = np.sort(data['parallax'])[-crit['t_min']] >= crit['p_min']
 
-        print '=== dbg ==='
-        print 'n_pt', n_pt
-        print 'n_best', n_best
-        print 'n_similar', n_similar
-        print 'n_pgood', n_pgood
-        print 'min_good', min_good
+        #print '=== dbg ==='
+        #print 'n_pt', n_pt
+        #print 'n_best', n_best
+        #print 'n_similar', n_similar
+        #print 'n_pgood', n_pgood, crit['t_min']
+        #print 'min_good', min_good
 
-        print '=== conclusion ==='
-        print 'points', n_best >= min_good # sufficient points
-        print 'unique', (n_similar == 1) # unique solution
-        print 'parallax', p_det # sufficient parallax
+        #print '=== conclusion ==='
+        #print 'points', n_best >= min_good # sufficient points
+        #print 'unique', (n_similar == 1) # unique solution
+        #print 'parallax', p_det # sufficient parallax
 
-        suc = np.logical_and.reduce([
-            n_best >= min_good, # sufficient points
-            n_similar == 1, # unique solution
-            p_det # sufficient parallax
-            ])
-        return suc
+        det = dict(
+                num_pts = (n_best >= min_good),
+                uniq_xfm = (n_similar == 1),
+                parallax = p_det
+                )
+        suc = np.logical_and.reduce(det.values())
+        return suc, det
