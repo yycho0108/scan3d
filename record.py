@@ -26,7 +26,7 @@ class NDRecord(object):
         #self.data_ = np.resize(self.data_, self.cap_)
         data = self.data_
         self.data_ = np.empty(shape=self.cap_, dtype=self.dtype_)
-        self.data_[:self.size_] = data
+        self.data_[:self.size_] = data[:self.size_]
 
         #for k in self.dtype_.names:
         #    setattr(self, k, self.data_[k])

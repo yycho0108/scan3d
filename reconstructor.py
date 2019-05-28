@@ -64,7 +64,9 @@ class Reconstructor(object):
         tvec = _['P1'][:3, 3:]
         return cvu.project_points(_['cld1'], rvec, tvec, _['K'], np.zeros(5))
     def n0(_):
-        return _['cld0']# - vm.rx3(_['R'].T, -_['t'].ravel())
+        # only apply translational component to cld1.
+        return _['cld1'] - vm.rx3(_['R'].T, -_['t'].ravel())
+        #return _['cld0']
     def n1(_):
         return _['cld1']
     def d0(_):
@@ -156,7 +158,7 @@ class Reconstructor(object):
         #self.data_['pt1'], self.data_['pt0'] = cvu.correct_matches(F,
         #        self.data_['pt1'],
         #        self.data_['pt0'])
-
+        # TODO : support Homography option (somewhat important?)
         R1, R2, t = cv2.decomposeEssentialMat(self['E'].mat)
         T_perm = [(R1, t), (R2, t), (R1, -t), (R2, -t)]
         d_null = dict(self.data_)

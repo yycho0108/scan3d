@@ -1,7 +1,77 @@
+#!/usr/bin/env python2
+
 import cv2
 import numpy as np
 from cho_util import vmath as M
 import time
+from sklearn.neighbors import NearestNeighbors
+
+_hdref = np.unpackbits(np.arange(256, dtype=np.uint8)).reshape(256,-1).sum(axis=-1)
+def hamming_distance(x0, x1):
+    x0, x1 = np.broadcast_arrays(x0, x1)
+    hd = _hdref[np.bitwise_xor(x0.ravel(), x1.ravel()).view('u1')]
+    shape = list(x0.shape[:-1])
+    shape.append(-1)
+    return hd.reshape(shape).sum(axis=-1)
+
+def match_local(pt1, pt2, dsc1, dsc2,
+        radius=15.0,
+        lowe  = 0.7,
+        maxd  = 64.,
+        hamming=True
+        ):
+    # binning by angular displacement
+    nbrs = NearestNeighbors(n_neighbors=2, radius=radius).fit(pt2)
+    idx2 = nbrs.radius_neighbors(pt1, return_distance=False)
+
+    # generate flattened index pair
+    idx1 = [np.full(len(i2), i1) for (i2, i1) in zip(idx2, np.arange(len(pt1))) ]
+    idx1 = np.concatenate(idx1)
+    idx2 = np.concatenate(idx2)
+
+    # compute distance
+    if hamming:
+        d = hamming_distance(dsc1[idx1], dsc2[idx2])
+    else:
+        d = np.linalg.norm(dsc1[idx1] - dsc2[idx2], axis=-1)
+
+    # sort by hamming distance to apply np.unique()
+    sort_idx = np.argsort(d)
+    d    = d[sort_idx]
+    idx1 = idx1[sort_idx]
+    idx2 = idx2[sort_idx]
+
+    # apply max distance mask
+    msk  = (d < maxd )
+    idx1 = idx1[msk]
+    d    = d[msk]
+    idx2 = idx2[msk]
+
+    # return "best"
+    idx1, unsort_idx = np.unique(idx1, return_index=True)
+    #idx1 = idx1[unsort_idx]
+    idx2 = idx2[unsort_idx]
+    return idx1, idx2
+
+    #msk = (d < maxd)
+    #msk = (hd < maxd)
+
+    ## apply hamming mask
+    #idx1 = idx1[msk]
+    #hd   = hd[msk]
+    #idx2 = idx2[msk]
+
+    #print idx1.shape
+    #print idx2.shape
+    #print len(idx), len(pt1)
+    # dist, idx = nbrs.kneighbors(pt1)
+    # hd        = hamming_distance(dsc1, dsc2[idx])
+    # print hd.shape
+    # print dist.shape
+
+    #idx0, idx1 = idx[:,0], idx[:,1]
+    #hd1 = hamming_distance(dsc1, dsc2[idx0]
+    #dist < radius
 
 class Matcher(object):
     PRESET_HARD=dict(
@@ -130,6 +200,7 @@ class Matcher(object):
             if len(des1) < 2:
                 # insufficient # of descriptors
                 return np.int32([]), np.int32([])
+
             match = self._match(des1, des2)
             match = self.filter(match, lowe, maxd)
 

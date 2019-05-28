@@ -66,7 +66,7 @@ def build_ekf(x0=None, P0=None,
         # considering vehicle dynamics, it's most likely constrained
         # within +-0.5m/s in x direction, +-0.1m/s in y direction,
         # and 0.5rad/s in angular velocity.
-        P0 = 1e-3 * np.eye(15)
+        P0 = 1e-6 * np.eye(15)
 
     if Q is None:
         # treat Q as a "tuning parameter"
@@ -82,7 +82,7 @@ def build_ekf(x0=None, P0=None,
     if R is None:
         # in general anticipate much lower heading error than positional error
         # 1e-2 ~ 0.57 deg
-        R = 1e-2 * np.eye(6)
+        R = 1e-3 * np.eye(6)
 
     ekf = EKFWrapper(15, 6)
     ekf.x = x0.copy()

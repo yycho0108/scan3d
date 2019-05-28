@@ -44,6 +44,9 @@ class AdvioReader(object):
         assert( self.cap_.get(cv2.CAP_PROP_FRAME_COUNT) == len(self.stamp_) )
 
     def parse(self, _={}):
+        """ 
+        Populate w, h, K, D
+        """
         # unroll params
         src = self.src_
         idx = self.idx_
@@ -84,6 +87,7 @@ class AdvioReader(object):
         _['D'] = np.float32([k1, k2, r1, r2])
 
     def build(self, _):
+        """ Prepare for rectification and update K matrix. """
         size = (_['w'],_['h'])
         K2, roi = cv2.getOptimalNewCameraMatrix(
                 _['K'], _['D'], size, 0)
@@ -91,7 +95,12 @@ class AdvioReader(object):
                 _['K'], _['D'], np.eye(3), K2, size,
                 cv2.CV_32FC1
                 )
+        # save unrectified parameters
+        _['K0'] = _['K']
+        _['D0'] = _['D']
+        # update with rectified params
         _['K']  = K2 # IMPORTANT : overriding default intrinsic matrix.
+        _['D']  = np.zeros_like(_['D'])
         _['m1'] = m1
         _['m2'] = m2
 
@@ -116,7 +125,6 @@ class AdvioReader(object):
         img = self.rectify(img)
         stamp = self.stamp_[self.pos_]
         self.pos_ += 1
-
         return suc, self.pos_, stamp, img
 
 def main():
