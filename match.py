@@ -5,6 +5,7 @@ import numpy as np
 from cho_util import vmath as M
 import time
 from sklearn.neighbors import NearestNeighbors
+#from match_local import match_local as match_local2
 
 _hdref = np.unpackbits(np.arange(256, dtype=np.uint8)).reshape(256,-1).sum(axis=-1)
 def hamming_distance(x0, x1):

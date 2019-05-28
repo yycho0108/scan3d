@@ -3,6 +3,7 @@
 import numpy as np
 import cv2
 import pptk
+import time
 
 from db import DB, Feature
 from track import Tracker
@@ -40,7 +41,7 @@ def _CFG_K():
 
 # configuration
 CFG = dict(
-        scale = 1.0,
+        scale = 0.5,
         state_size = 15,
         K = _CFG_K(),
         pLK = dict(
@@ -74,23 +75,25 @@ class Pipeline(object):
     def build_cfg(self, cfg):
         # build derived values
 
-        # image shape
-        shape = (cfg['h'], cfg['w'], 3) # TODO : handle monochrome
-
-        # scaled camera matrix
+        # apply scale
+        w = int( cfg['scale'] * cfg['w'] )
+        h = int( cfg['scale'] * cfg['h'] )
         K0 = cfg['K']
         K = cfg['scale'] * cfg['K']
         K[2,2] = 1.0
+
+        # image shape
+        shape = (h, w, 3) # TODO : handle monochrome
 
         # first, make a copy from argument
         cfg = dict(cfg)
 
         # insert derived values
+        cfg['w']     = w
+        cfg['h']     = h
         cfg['shape'] = shape
         cfg['K0']    = K0
         cfg['K']     = K
-
-        return cfg
 
         ## create dynamic type
         #ks = cfg.keys()
@@ -101,11 +104,11 @@ class Pipeline(object):
 
         return cfg
 
+
     def build_db(self):
         cfg = self.cfg_
-        img_shape = (cfg['h'], cfg['w'], 3)
         ex       = self.extractor_
-        img_fmt  = (img_shape, np.uint8)
+        img_fmt  = (cfg['shape'], np.uint8)
         dsc_t    = (np.uint8 if ex.descriptorType() == cv2.CV_8U else np.float32)
         dsc_fmt  = (self.extractor_.descriptorSize(), dsc_t)
         return DB(img_fmt=img_fmt, dsc_fmt=dsc_fmt)
@@ -265,10 +268,12 @@ class Pipeline(object):
 
         # search local map
         #self.tracker_.track()...
+        # TODO : use results from match_local() + persistently tracked points
         mi0, mi1 = match_local(
                 pt0, feat1.pt,
                 dsc, feat1.dsc
                 )
+        print_ratio(len(mi0), len(pt0))
         #suc, rvec, tvec = cv2.solvePnP(
         #        cld[mi0], feat1.pt[mi1],
         #        self.cfg_['K'], self.cfg_['D']
@@ -277,8 +282,8 @@ class Pipeline(object):
         suc, rvec, tvec, inl = cv2.solvePnPRansac(
                 cld[mi0], feat1.pt[mi1],
                 self.cfg_['K'], self.cfg_['D'],
-                iterationsCount=256,
-                reprojectionError=4.0,
+                iterationsCount=1024,
+                reprojectionError=0.1,
                 confidence=0.99
                 )
         # inversion?
@@ -294,7 +299,7 @@ class Pipeline(object):
         #viz  = draw_matches(img1, img1,
         #        pt0[mi0], feat1.pt[mi1])
         viz  = draw_matches(img1, img1,
-                pt0r, feat1.pt[mi1])
+                pt0[mi0], feat1.pt[mi1])
         #print pt0[mi0] - feat1.pt[mi1]
         #viz  = draw_matches(img1, img1,
         #        pt0[mi0], feat1.pt[mi1])
