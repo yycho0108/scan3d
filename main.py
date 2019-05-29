@@ -62,10 +62,19 @@ class PipelineState(Enum):
     TRACK    = 3 # tracking!
     LOST     = 4 # lost and sad!
 
+def project_to_frame(cloud, frame, K, D):
+    rmat = tx.euler_matrix(*frame['pose'][9:12])[:3,:3]
+    R, t = rmat, frame['pose'][0:3]
+    #R, t = vm.Rti(R, t)
+    rvec = cv2.Rodrigues(R)[0]
+    tvec = t
+    return cvu.project_points(cloud, rvec, tvec,
+            K, D)
+
 class Pipeline(object):
     def __init__(self, cfg):
         self.cfg_       = self.build_cfg(cfg)
-        self.extractor_ = cv2.ORB_create(2048, edgeThreshold=19)
+        self.extractor_ = cv2.ORB_create(1024, edgeThreshold=19)
         self.matcher_   = Matcher(ex=self.extractor_)
         self.tracker_   = Tracker(pLK=cfg['pLK'])
         self.kf_        = build_ekf()
@@ -219,12 +228,19 @@ class Pipeline(object):
         cld1 = data['cld1'][cld_msk]
         # IMPORTANT : everything references **frame1** !!
         # (so frame0 geometric information is effectively ignored.)
-        self.local_map_ = [
-                np.arange(self.db_.landmark.size, self.db_.landmark.size + len(cld1)),
-                feat1.dsc[mi1][cld_msk],
-                cld1.copy() # ,is_tracking=True?
-                ]
-        self.db_.landmark.extend(zip(*self.local_map_))
+        lmk_idx0 = self.db_.landmark.size
+        self.local_map_ = dict(
+                index   = lmk_idx0 + np.arange(len(cld1)), # landmark index
+                src     = np.full(len(cld1), frame1['index']), # source index
+                dsc     = feat1.dsc[mi1][cld_msk], # landmark descriptor
+                pos     = cld1, # landmark position [[ map frame ]]
+                pt      = pt1m, # tracking point initialization
+                tri     = np.ones(len(cld1), dtype=np.bool),
+                track   = np.ones(len(cld1), dtype=np.bool) # trackin status
+                )
+        self.db_.landmark.extend(zip(*[
+            self.local_map_[k] for k in self.db_.landmark.dtype.names]
+            ))
         #print self.db_.landmark.size
 
         # unroll reconstruct information
@@ -232,17 +248,15 @@ class Pipeline(object):
         t   = data['t']
         msk = data['msk_cld']
 
-        # cache guess
-        R   = data['R']
-        t   = data['t']
+        #print( 'Rpriori', tx.euler_from_matrix(R))
         #R, t = vm.Rti(R, t)
-        frame1['pose'][0:3] = t.ravel()
+        frame1['pose'][0:3]  = t.ravel()
         frame1['pose'][9:12] = tx.euler_from_matrix(R)
-        x, P = self.motion_model(
-                    f0 = self.db_.frame_[-2],
-                    f1 = frame1,
-                    use_kf = False, dt=dt)
-        self.nxt_ = x, P
+        #x, P = self.motion_model(
+        #            f0 = self.db_.frame_[-2],
+        #            f1 = frame1,
+        #            use_kf = False, dt=dt)
+        self.nxt_ = frame1['pose'], frame1['cov'] # TODO : get rid of this hack
 
         # update frame data
         #[0pos,3vel,6acc,9rpos,12rvel]
@@ -265,7 +279,7 @@ class Pipeline(object):
         # at the end of each processing function.
         if True:
             # == if cfg['dbg']:
-            print('R', np.rad2deg(tx.euler_from_matrix(R)))
+            print('R', tx.euler_from_matrix(R))
             print('frame pair : {}-{}'.format(
                 frame0['index'],
                 frame1['index']))
@@ -278,12 +292,12 @@ class Pipeline(object):
 
     def track(self, img, dt, data={}):
         """ Track landmarks"""
-        # populate frame from motion model
-        print('track-dt', dt)
-        
+        # populate frame from motion model(?)
         self.add_frame(img, dt=dt)
 
         # unroll data
+        landmark = self.db_.landmark
+
         frame0 = self.db_.keyframe[-1] # last **keyframe**
         frame1 = self.db_.frame[-1]
         img0  , img1  = frame0['image'] , frame1['image']
@@ -296,55 +310,81 @@ class Pipeline(object):
             frame1['cov'] = P
             self.nxt_ = None
 
-        idx, dsc, cld = self.local_map_
-        #[0pos,3vel,6acc,9rpos,12rvel]
-        rmat = tx.euler_matrix(*frame1['pose'][9:12])[:3,:3]
-        R, t = rmat, frame1['pose'][0:3]
-        R, t = vm.Rti(R, t)
-        rvec = cv2.Rodrigues(R)[0]
-        tvec = t
-        pt0  = cvu.project_points(cld, rvec, tvec,
-                self.cfg_['K'], self.cfg_['D']) # cld -> cam coord.
+        # bypass match_local if already tracking ...
+        pt0_l = landmark['pt'][landmark['track']]
+        pt1_l, msk_t = self.tracker_.track(
+                img0, img1, pt0_l, return_msk=True)
 
-        # search local map
-        #self.tracker_.track()...
-        # TODO : use results from match_local() + persistently tracked points
-        mi0, mi1 = match_local(
-                pt0, feat1.pt,
-                dsc, feat1.dsc
-                )
-        if len(mi0) <= 0:
-            viz1 = draw_points(img1.copy(), pt0)
-            viz2 = draw_points(img1.copy(), feat1.pt)
-            viz = np.concatenate([viz1, viz2], axis=1)
-            cv2.imshow('pnp', viz)
-            return False
+        # apply tracking mask
+        pt0_l = pt0_l[msk_t]
+        pt1_l = pt1_l[msk_t]
 
-        print_ratio(len(mi0), len(pt0))
+        # update tracking status
+        landmark['track'][landmark['track'].nonzero()[0][~msk_t]] = False
+        landmark['pt'][landmark['track']] = pt1_l
+
+        # search additional points
+        cld0_l = landmark['pos'][~landmark['track']]
+        dsc_l  = landmark['dsc'][~landmark['track']]
+        if len(cld0_l) >= 16:
+            pt0_cld_l = project_to_frame(cld0_l, frame1,
+                    self.cfg_['K'], self.cfg_['D'])
+            mi0, mi1 = match_local(
+                    pt0_cld_l, feat1.pt,
+                    dsc_l, feat1.dsc
+                    )
+
+            # collect all paris
+            pt0  = np.concatenate([pt0_l, pt0_cld_l[mi0]], axis=0)
+            pt1  = np.concatenate([pt1_l, feat1.pt[mi1]], axis=0)
+            cld0 = np.concatenate([
+                landmark['pos'][landmark['track']],
+                landmark['pos'][~landmark['track']][mi0]
+                ], axis=0)
+        else:
+            pt0  = pt0_l
+            pt1  = pt1_l
+            cld0 = landmark['pos'][landmark['track']]
+        print 'point ratio', print_ratio(len(pt0_l), len(pt0))
+
+        #if len(mi0) <= 0:
+        #    viz1 = draw_points(img1.copy(), pt0)
+        #    viz2 = draw_points(img1.copy(), feat1.pt)
+        #    viz = np.concatenate([viz1, viz2], axis=1)
+        #    cv2.imshow('pnp', viz)
+        #    return False
+
+        #print_ratio(len(mi0), len(pt0))
         #suc, rvec, tvec = cv2.solvePnP(
         #        cld[mi0], feat1.pt[mi1],
         #        self.cfg_['K'], self.cfg_['D']
         #        ) # T(rv,tv) . cld = cam
         #print 'euler', tx.euler_from_matrix(cv2.Rodrigues(rvec)[0])
         suc, rvec, tvec, inl = cv2.solvePnPRansac(
-                cld[mi0], feat1.pt[mi1],
+                cld0, pt1,
                 self.cfg_['K'], self.cfg_['D'],
-                iterationsCount=16384,
-                reprojectionError=0.1,
-                confidence=0.99999
+                #iterationsCount=4096,
+                #reprojectionError=2.0,
+                #confidence=0.99
                 )
+        print('pnp success : {}'.format(suc))
+
+        if inl is not None:
+            # print 'inl', inl
+            print 'pnp inlier', print_ratio(len(inl), len(cld0))
+        
         # inversion?
         #R = cv2.Rodrigues(rvec)[0]
         #t = tvec
         #R, t = vm.Rti(R, t)
         #rvec = cv2.Rodrigues(R)[0]
         #tvec = t
-        pt0r = cvu.project_points(cld[mi0],
-                rvec, tvec,
-                self.cfg_['K'], self.cfg_['D'])
+        #pt0r = cvu.project_points(cld[mi0],
+        #        rvec, tvec,
+        #        self.cfg_['K'], self.cfg_['D'])
 
         viz  = draw_matches(img1, img1,
-                pt0[mi0], feat1.pt[mi1])
+                pt0, pt1)
         #viz  = draw_matches(
         #        frame0['image'], img1,
         #        self.db_.landmark[idx][mi0]['pt'], feat1.pt[mi1])
@@ -356,10 +396,14 @@ class Pipeline(object):
         # obtained position!
         R   = cv2.Rodrigues(rvec)[0]
         t   = np.float32(tvec)
-        R, t = vm.Rti(R, t)
-        rxn = np.float32( tx.euler_from_matrix(R) )
-        txn = np.float32( t )
-        print 'rxn', rxn
+        #R, t = vm.Rti(R, t)
+
+        if suc:
+            rxn = np.float32( tx.euler_from_matrix(R) )
+            txn = np.float32( t )
+            print 'rxn (radians)', rxn
+            self.db_.frame[-1]['pose'][0:3] = txn.ravel()
+            self.db_.frame[-1]['pose'][9:12] = rxn.ravel()
 
         if False:
             # motion_update()
@@ -392,7 +436,7 @@ def main():
     #src = './scan_20190212-233625.h264'
     #reader = CVCameraReader(src)
     root = '/media/ssd/datasets/ADVIO'
-    reader = AdvioReader(root, idx=1)
+    reader = AdvioReader(root, idx=2)
 
     # update configuration based on input
     cfg = dict(CFG)
@@ -408,7 +452,7 @@ def main():
         suc, idx, stamp, img = reader.read()
         dt  = (stamp - prv)
         prv = stamp
-        cv2.imshow('img', img)
+        #cv2.imshow('img', img)
         if not suc: break
         img = cv2.resize(img, None, fx=CFG['scale'], fy=CFG['scale'])
         data = {}

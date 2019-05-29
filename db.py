@@ -22,6 +22,8 @@ class DB(object):
         index   : landmark index.
         dsc     : landmark (visual) descriptor.
         pos     : landmark position.
+        kpt     : tracked keypoints.
+        trk     : if the point is currently tracked.
 
     DB.observation : NDRecord( (frame_id, landmark_id, point) )
         frame_id    : frame index.
@@ -36,17 +38,21 @@ class DB(object):
 
         # instantiate data
         self.frame_ = NDRecord([
-            ('index' , np.int32   , 1)     ,
-            ('image' , img_t      , img_s) ,
-            ('pose'  , np.float32 , 15)    ,
-            ('cov'   , np.float32 , (15, 15)) ,
-            ('is_kf' , np.bool    , 1)     ,
-            ('feat'   , Feature     , 1)
+            ('index' , np.int32   , 1           ) ,
+            ('image' , img_t      , img_s       ) ,
+            ('pose'  , np.float32 , 15          ) ,
+            ('cov'   , np.float32 , (15, 15 )   ) ,
+            ('is_kf' , np.bool    , 1           ) ,
+            ('feat'  , Feature    , 1           )
             ])
         self.landmark_ = NDRecord([
-            ('index' , np.int32   , 1)     ,
-            ('dsc'   , dsc_t      , dsc_s) ,
-            ('pos'   , np.float32 , 3)     ,
+            ('index' , np.int32   , 1     ) ,
+            ('src'   , np.int32   , 1     ) ,
+            ('dsc'   , dsc_t      , dsc_s ) ,
+            ('pos'   , np.float32 , 3     ) ,
+            ('pt'    , np.float32 , 2     ) ,
+            ('tri'   , np.bool    , 1     ) ,
+            ('track' , np.bool    , 1     )
             ])
 
         # current frame state

@@ -39,6 +39,8 @@ class NDRecord(object):
 
     def __getitem__(self, *args, **kwargs):
         return self.data.__getitem__(*args, **kwargs)
+    def __setitem__(self, *args, **kwargs):
+        return self.data.__setitem__(*args, **kwargs)
 
     def extend(self, recs):
         if (self.size_ + len(recs)) >= self.cap_:

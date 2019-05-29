@@ -106,18 +106,20 @@ class Tracker(object):
         err = np.linalg.norm(pt1 - pt1_r, axis=-1)
 
         # apply mask
-        msk = np.logical_and.reduce([
-            # error check
-            err < thresh,
-            # bounds check
-            0 <= pt2[:,0],
-            0 <= pt2[:,1],
-            pt2[:,0] < w,
-            pt2[:,1] < h,
-            # status check
-            st_fw,
-            st_bw,
-            ])
+        msks = [
+                # error check
+                err < thresh,
+                # bounds check
+                0 <= pt2[:,0],
+                0 <= pt2[:,1],
+                pt2[:,0] < w,
+                pt2[:,1] < h,
+                # status check
+                st_fw,
+                st_bw,
+                ]
+        #print [m.shape for m in msks]
+        msk = np.logical_and.reduce(msks)
 
         if return_msk:
             return pt2, msk

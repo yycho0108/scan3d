@@ -87,7 +87,7 @@ class TwoView(object):
                 e_max = 1.0, # max reprojection error
                 f_max = 0.99998, # max **cosine** parallax to be considered finite
                 t_min = 64, # minimum number of triangulated points
-                p_min = np.deg2rad(1.0), # minimum parallax to accept solution
+                p_min = np.deg2rad(2.0), # minimum parallax to accept solution
                 u_max = 0.7 # min ratio by which `unique` xfm must surpass alternatives
                 )
     def _H(_):
@@ -164,7 +164,8 @@ class TwoView(object):
         """ cld0 `normal direction` vector (unnormalized) """
         # only apply translational component to cld1.
         #return _['cld0']
-        return _['cld1'] - vm.rx3(_['R'].T, -_['t'].ravel())
+        return _['cld1'] + _['t'].reshape(1,3)
+        #return _['cld1'] - vm.rx3(_['R'].T, -_['t'].ravel())
     def n1(_):
         """ cld1 `normal direction` vector (unnormalized) """
         return _['cld1']
@@ -289,13 +290,12 @@ class TwoView(object):
             return False
 
         # correct matches?
-        #F = vm.E2F(self['E'], self['K'])
-        #self.data_['pt1'], self.data_['pt0'] = cvu.correct_matches(F,
-        #        self.data_['pt1'],
-        #        self.data_['pt0'])
-        # TODO : support Homography option (somewhat important?)
-        R1, R2, t = cv2.decomposeEssentialMat(self['E'])
-        T_perm = [(R1, t), (R2, t), (R1, -t), (R2, -t)]
+        if self['model'] != 'H':
+            F = self['F']
+            self.data_['pt1'], self.data_['pt0'] = cvu.correct_matches(F,
+                    self.data_['pt1'],
+                    self.data_['pt0'])
+
         d_null = dict(self.data_)
         d_perm = [] # data for each permutation
 
