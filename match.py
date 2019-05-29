@@ -9,6 +9,8 @@ from sklearn.neighbors import NearestNeighbors
 _hdref = np.unpackbits(np.arange(256, dtype=np.uint8)).reshape(256,-1).sum(axis=-1)
 def hamming_distance(x0, x1):
     x0, x1 = np.broadcast_arrays(x0, x1)
+    if (x0.size) <= 0:
+        return np.empty(shape=(0,), dtype=np.int32)
     hd = _hdref[np.bitwise_xor(x0.ravel(), x1.ravel()).view('u1')]
     shape = list(x0.shape[:-1])
     shape.append(-1)
@@ -16,7 +18,7 @@ def hamming_distance(x0, x1):
 
 def match_local(pt1, pt2, dsc1, dsc2,
         radius=15.0,
-        lowe  = 0.7,
+        #lowe  = 0.7,
         maxd  = 64.,
         hamming=True
         ):

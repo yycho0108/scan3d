@@ -66,7 +66,7 @@ def build_ekf(x0=None, P0=None,
         # considering vehicle dynamics, it's most likely constrained
         # within +-0.5m/s in x direction, +-0.1m/s in y direction,
         # and 0.5rad/s in angular velocity.
-        P0 = 1e-12 * np.eye(15)
+        P0 = 1e-6 * np.eye(15)
 
     if Q is None:
         # treat Q as a "tuning parameter"
@@ -77,7 +77,7 @@ def build_ekf(x0=None, P0=None,
         # and the estimation accuracy is compromised; In case of lower Q, the
         # better estimation accuracy is achieved and time lag may be introduced in the estimated value.
         # process noise
-        Q = 1e-6 * np.eye(15)
+        Q = 1e-3 * np.eye(15)
 
     if R is None:
         # in general anticipate much lower heading error than positional error
