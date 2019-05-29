@@ -16,7 +16,7 @@ from tf import transformations as tx
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-from reconstructor import Reconstructor
+from twoview import TwoView
 from reader.advio import AdvioReader
 
 # use recorded configuration
@@ -65,7 +65,7 @@ class PipelineState(Enum):
 class Pipeline(object):
     def __init__(self, cfg):
         self.cfg_       = self.build_cfg(cfg)
-        self.extractor_ = cv2.ORB_create(1024, edgeThreshold=19)
+        self.extractor_ = cv2.ORB_create(2048, edgeThreshold=19)
         self.matcher_   = Matcher(ex=self.extractor_)
         self.tracker_   = Tracker(pLK=cfg['pLK'])
         self.kf_        = build_ekf()
@@ -181,15 +181,15 @@ class Pipeline(object):
         pt0m = feat0.pt[mi0]
         pt1m = feat1.pt[mi1]
         
-        suc, det = Reconstructor(pt0m, pt1m, self.cfg_['K']).compute(data=data)
+        suc, det = TwoView(pt0m, pt1m, self.cfg_['K']).compute(data=data)
+        print(data['dbg-tv'])
         if not suc:
             # unsuccessful frame-to-frame reconstruction
-            #print('\t det : {}'.format(det))
             if not det['num_pts']:
                 # condition: `tracking lost`
                 # BEFORE sufficient parallax was observed.
                 # need to reset the reference frame.
-                print('\t -- reset keyframe')
+                #print('\t -- reset keyframe')
                 # reset keyframe
                 frame1['is_kf'] = True
             return
@@ -345,12 +345,14 @@ def main():
     #src = './scan_20190212-233625.h264'
     #reader = CVCameraReader(src)
     root = '/media/ssd/datasets/ADVIO'
-    reader = AdvioReader(root)
+    reader = AdvioReader(root, idx=5)
 
     # update configuration based on input
     cfg = dict(CFG)
     cfg['K'] = reader.meta_['K']
     cfg.update(reader.meta_)
+
+    reader.set_pos(1000)
 
     pl  = Pipeline(cfg=cfg)
     cv2.namedWindow('viz', cv2.WINDOW_NORMAL)
@@ -360,8 +362,6 @@ def main():
         dt  = (stamp - prv)
         prv = stamp
         cv2.imshow('img', img)
-        if(idx <= 1000):
-            continue
         if not suc: break
         img = cv2.resize(img, None, fx=CFG['scale'], fy=CFG['scale'])
         data = {}

@@ -5,7 +5,67 @@ from cho_util import vmath as vm
 from collections import namedtuple
 import cv_util as cvu
 
-class Reconstructor(object):
+def score_H(pt1, pt2, H, sigma=1.0):
+    """ Homography model symmetric transfer error. """
+    score = 0.0
+    th = 5.991 # ??? TODO : magic number
+    iss = (1.0 / (sigma*sigma))
+
+    Hi = vm.inv(H)
+    pt2_r = vm.from_h(vm.to_h(pt1).dot(H.T))
+    pt1_r = vm.from_h(vm.to_h(pt2).dot(Hi.T))
+    e1 = np.square(pt1 - pt1_r).sum(axis=-1)
+    e2 = np.square(pt2 - pt2_r).sum(axis=-1)
+
+    #score = 1.0 / (e1.mean() + e2.mean())
+    chi_sq1 = e1 * iss
+    msk1 = (chi_sq1 <= th)
+    score += ((th - chi_sq1) * msk1).sum()
+
+    chi_sq2 = e2 * iss
+    msk2 = (chi_sq2 <= th)
+    score += ((th - chi_sq2) * msk2).sum()
+    return score, (msk1 & msk2)
+
+def score_F(pt1, pt2, F, sigma=1.0):
+    """
+    Fundamental Matrix symmetric transfer error.
+    reference:
+        https://github.com/opencv/opencv/blob/master/modules/calib3d/src/fundam.cpp#L728
+    """
+    score = 0.0
+    th = 3.841 # ??
+    th_score = 5.991 # ?? TODO : magic number
+    iss = (1.0 / (sigma*sigma))
+
+    pt1_h = vm.to_h(pt1)
+    pt2_h = vm.to_h(pt2)
+
+    x1, y1 = pt1.T
+    x2, y2 = pt2.T
+
+    a, b, c = pt1_h.dot(F.T).T # Nx3
+    s2 = 1./(a*a + b*b);
+    d2 = a * x2 + b * y2 + c
+    e2 = d2*d2*s2
+
+    a, b, c = pt2_h.dot(F).T
+    s1 = 1./(a*a + b*b);
+    d1 = a * x1 + b * y1 + c
+    e1 = d1*d1*s1
+
+    #score = 1.0 / (e1.mean() + e2.mean())
+    chi_sq2 = e2 * iss
+    msk2 = (chi_sq2 <= th)
+    score += ((th_score - chi_sq2) * msk2).sum()
+
+    chi_sq1 = e1* iss
+    msk1 = (chi_sq1 <= th)
+    score += ((th_score - chi_sq1) * msk1).sum()
+
+    return score, (msk1 & msk2)
+
+class TwoView(object):
     """
     Two-Frame Reconstructor.
     Somewhat obsessive attempt to never repeat computation.
@@ -13,9 +73,6 @@ class Reconstructor(object):
     IMPORTANT :: all transforms will reference
     the camera Matrix of **pt1** as the map coordinate frame.
     """
-
-    # hack to circumvent multiple output from E()
-    E_t = namedtuple('E_t', ['mat', 'msk'])
 
     def __init__(self, pt0, pt1, K):
         # initialize cache
@@ -33,13 +90,40 @@ class Reconstructor(object):
                 p_min = np.deg2rad(1.0), # minimum parallax to accept solution
                 u_max = 0.7 # min ratio by which `unique` xfm must surpass alternatives
                 )
-
-    def E(_):
+    def _H(_):
+        """ internal function for invoking H() to allow multiple returns """
         if (_['pt1'].shape[0] <= 5):
-            print('Impossible to compute error')
-            return Reconstructor.E_t(None, None)
-        mat, msk = cvu.E(_['pt1'], _['pt0'], _['K'], method=cv2.FM_RANSAC)
-        return Reconstructor.E_t(mat=mat, msk=msk)
+            print('Impossible to compute Homography Matrix')
+            return None, None
+        return cvu.H(_['pt1'], _['pt0'],
+                method=cv2.FM_RANSAC,
+                confidence=0.99,
+                ransacReprojThreshold=0.5
+                #prob=0.99,
+                #threshold=0.5
+                )
+    def H(_):
+        return _['_H'][0]
+    def msk_H(_):
+        return _['_H'][1]
+
+    def _E(_):
+        """ internal function for invoking E() to allow multiple returns """
+        if (_['pt1'].shape[0] <= 5):
+            print('Impossible to compute Essential Matrix')
+            return None, None
+        return cvu.E(_['pt1'], _['pt0'], _['K'],
+                method=cv2.FM_RANSAC,
+                prob=0.99,
+                threshold=0.5
+                )
+    def E(_):
+        return _['_E'][0]
+    def msk_E(_):
+        return _['_E'][1]
+
+    def F(_):
+        return vm.E2F(_['E'],K=_['K'])
     def P0(_):
         return np.concatenate([_['R'], _['t'].reshape(3,1)], axis=1)
     def P1(_):
@@ -103,7 +187,6 @@ class Reconstructor(object):
 
         # unroll data
         cld0, cld1 = _['cld0'], _['cld1']
-        msk_E = _['E'].msk
 
         # reprojection error
         r_err0 = np.linalg.norm(_['pt0r'] - _['pt0'], axis=-1)
@@ -119,8 +202,8 @@ class Reconstructor(object):
 
         # collect conditions
         msks = [
-                # essential matrix consistency check
-                _['E'].msk,
+                # model inlier check
+                _['msk_H'] if (_['model'] == 'H') else _['msk_E'],
 
                 # depth validity check
                 op_or(msk_inf, z_min <= z0),
@@ -132,7 +215,6 @@ class Reconstructor(object):
                 r_err0 < e_max,
                 r_err1 < e_max
                 ]
-        #print('msks', [m.sum() for m in msks])
 
         msk = np.logical_and.reduce(msks)
         # "valid" triangulation mask
@@ -140,6 +222,27 @@ class Reconstructor(object):
         # count of "good" points including infinity
         n_good   = msk.sum()
         return n_good, msk_cld
+
+    def r_H(_):
+        sF = score_F(_['pt1'], _['pt0'], _['F'])[0]
+        sH = score_H(_['pt1'], _['pt0'], _['H'])[0]
+        return (sH / (sH + sF)) # ratio
+
+    def model(_):
+        return ('H' if (_['r_H'] > 0.45) else 'E')
+
+    def select_model(_):
+        if (_['model'] == 'H'):
+            # decompose_H()
+            res_h, Hr, Ht, Hn = cv2.decomposeHomographyMat(_['H'],_['K'])
+            Ht = np.float32(Ht)
+            Ht /= np.linalg.norm(Ht, axis=(1,2), keepdims=True)
+            T_perm = zip(Hr, Ht)
+        else: 
+            # decompose_E()
+            R1, R2, t = cv2.decomposeEssentialMat(_['E'])
+            T_perm = [(R1, t), (R2, t), (R1, -t), (R2, -t)]
+        return T_perm
 
     def compute(self, crit={}, data={}):
         """ compute reconstruction. """
@@ -149,17 +252,18 @@ class Reconstructor(object):
         tmp.update(crit)
         crit = tmp
 
-        if (self['E'].mat is None) or (len(self['E'].mat) > 3):
-            print('non-unique or invalid essential matrix')
+        T_perm = self.select_model()
+        if (T_perm is None):
+            data['dbg-tv'] = 'Unable to obtain valid transform permutations'
             return False
 
         # correct matches?
-        #F = vm.E2F(self['E'].mat, self['K'])
+        #F = vm.E2F(self['E'], self['K'])
         #self.data_['pt1'], self.data_['pt0'] = cvu.correct_matches(F,
         #        self.data_['pt1'],
         #        self.data_['pt0'])
         # TODO : support Homography option (somewhat important?)
-        R1, R2, t = cv2.decomposeEssentialMat(self['E'].mat)
+        R1, R2, t = cv2.decomposeEssentialMat(self['E'])
         T_perm = [(R1, t), (R2, t), (R1, -t), (R2, -t)]
         d_null = dict(self.data_)
         d_perm = [] # data for each permutation
@@ -209,22 +313,26 @@ class Reconstructor(object):
         #else:
         #    p_det = np.sort(data['parallax'])[-crit['t_min']] >= crit['p_min']
 
-        #print '=== dbg ==='
-        #print 'n_pt', n_pt
-        #print 'n_best', n_best
-        #print 'n_similar', n_similar
-        #print 'n_pgood', n_pgood, crit['t_min']
-        #print 'min_good', min_good
-
-        #print '=== conclusion ==='
-        #print 'points', n_best >= min_good # sufficient points
-        #print 'unique', (n_similar == 1) # unique solution
-        #print 'parallax', p_det # sufficient parallax
-
         det = dict(
                 num_pts = (n_best >= min_good),
                 uniq_xfm = (n_similar == 1),
                 parallax = p_det
+                )
+        # override parallax flag
+        # det['parallax'] = True
+
+        # debug log
+        data['dbg-tv'] = """
+        [TwoView Log]
+        model     : {} ({})
+        num_pts   : {} ({} / {}),
+        uniq_xfm  : {} ({} / {}),
+        parallax  : {} ({} / {})
+        """.format(
+                data['model'], data['r_H'],
+                det['num_pts'], n_best,  min_good,
+                det['uniq_xfm'], n_similar, 1,
+                det['parallax'], n_pgood, crit['t_min']
                 )
         suc = np.logical_and.reduce(det.values())
         return suc, det

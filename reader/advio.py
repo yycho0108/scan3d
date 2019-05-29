@@ -90,9 +90,10 @@ class AdvioReader(object):
         """ Prepare for rectification and update K matrix. """
         size = (_['w'],_['h'])
         K2, roi = cv2.getOptimalNewCameraMatrix(
-                _['K'], _['D'], size, 0)
+                _['K'], _['D'], size, 0) # TODO : 0 or 1 depending on use case ...
+        #K2 = _['K']
         m1, m2 = cv2.initUndistortRectifyMap(
-                _['K'], _['D'], np.eye(3), K2, size,
+                _['K'], _['D'], None, K2, size,
                 cv2.CV_32FC1
                 )
         # save unrectified parameters
@@ -121,11 +122,17 @@ class AdvioReader(object):
 
     def read(self):
         suc, img = self.cap_.read()
+        if not suc:
+            return suc, self.pos_, -1, None
         img = self.rotate(img)
         img = self.rectify(img)
         stamp = self.stamp_[self.pos_]
         self.pos_ += 1
         return suc, self.pos_, stamp, img
+
+    def set_pos(self, pos):
+        self.pos_ = pos
+        self.cap_.set( cv2.CAP_PROP_POS_FRAMES, pos)
 
 def main():
     root = '/media/ssd/datasets/ADVIO'
