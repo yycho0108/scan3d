@@ -103,8 +103,10 @@ class TwoView(object):
                 #threshold=0.5
                 )
     def H(_):
+        """ Homography Matrix """
         return _['_H'][0]
     def msk_H(_):
+        """ Homography Matrix Inlier Mask """
         return _['_H'][1]
 
     def _E(_):
@@ -118,44 +120,59 @@ class TwoView(object):
                 threshold=0.5
                 )
     def E(_):
+        """ Essential Matrix """
         return _['_E'][0]
     def msk_E(_):
+        """ Essential Matrix Inlier Mask"""
         return _['_E'][1]
 
     def F(_):
+        """ Fundamental Matrix (converted from E()) """
         return vm.E2F(_['E'],K=_['K'])
     def P0(_):
+        """ Projection Matrix (view 0) """
         return np.concatenate([_['R'], _['t'].reshape(3,1)], axis=1)
     def P1(_):
+        """ Projection Matrix (view 1) """
         return np.eye(3,4)
     def KP0(_):
+        """ Camera Projection Matrix (view 0) """
         return _['K'].dot(_['P0'])
     def KP1(_):
+        """ Camera Projection Matrix (view 1) """
         return _['K'].dot(_['P1'])
     def cld1(_):
+        """ Triangulated Point Cloud (view 1) """
         return cvu.triangulate_points(
                 _['KP1'], _['KP0'],
                 _['pt1'], _['pt0'],
                 )
     def cld0(_):
+        """ Triangulated PointCloud (view 2) """
         return vm.tx3(_['P0'], _['cld1'])
     def pt0r(_):
+        """ Reconstructed pixel-coordinate point (view 0) """
         #R, t = (_['P0'][:3,:3], _['P0'][:3,3:])
         #rvec, tvec = cv2.Rodrigues(R)[0], t
         return cvu.project_points(_['cld0'], np.zeros(3), np.zeros(3), _['K'], np.zeros(5))
     def pt1r(_):
+        """ Reconstructed pixel-coordinate point (view 1) """
         rvec = cv2.Rodrigues(_['P1'][:3, :3])[0]
         tvec = _['P1'][:3, 3:]
         return cvu.project_points(_['cld1'], rvec, tvec, _['K'], np.zeros(5))
     def n0(_):
+        """ cld0 `normal direction` vector (unnormalized) """
         # only apply translational component to cld1.
-        return _['cld1'] - vm.rx3(_['R'].T, -_['t'].ravel())
         #return _['cld0']
+        return _['cld1'] - vm.rx3(_['R'].T, -_['t'].ravel())
     def n1(_):
+        """ cld1 `normal direction` vector (unnormalized) """
         return _['cld1']
     def d0(_):
+        """ euclidean (l2)-length of n0 """
         return np.linalg.norm(_['n0'], axis=-1)
     def d1(_):
+        """ euclidean (l2)-length of n1 """
         return np.linalg.norm(_['n1'], axis=-1)
 
     def cospar(_):
@@ -178,6 +195,7 @@ class TwoView(object):
         return self.data_[name]
 
     def evaluate(_, crit):
+        """ evaluate the score of a particular permutation """
         # unroll evaluation criteria
         z_min = crit['z_min']
         z_max = crit['z_max']
@@ -224,14 +242,17 @@ class TwoView(object):
         return n_good, msk_cld
 
     def r_H(_):
+        """ r_H (ratio to determine Homography/Essential Matrix model """
         sF = score_F(_['pt1'], _['pt0'], _['F'])[0]
         sH = score_H(_['pt1'], _['pt0'], _['H'])[0]
         return (sH / (sH + sF)) # ratio
 
     def model(_):
+        """ Model Identifier """
         return ('H' if (_['r_H'] > 0.45) else 'E')
 
     def select_model(_):
+        """ Select model and return possible transform permutations """
         if (_['model'] == 'H'):
             # decompose_H()
             res_h, Hr, Ht, Hn = cv2.decomposeHomographyMat(_['H'],_['K'])
@@ -245,7 +266,17 @@ class TwoView(object):
         return T_perm
 
     def compute(self, crit={}, data={}):
-        """ compute reconstruction. """
+        """
+        Compute reconstruction.
+
+        Arguments:
+            crit(dict): specify criteria to override.
+            data(dict): this will be updated with intermediate values.
+
+        Returns:
+            suc(bool): whether reconstruction was successful.
+            det(dict): dictionary of determinants for `suc` based on criteria.
+        """
 
         # criteria
         tmp = self.crit_.copy()
