@@ -52,6 +52,7 @@ class DB(object):
             ('pos'   , np.float32 , 3     ) ,
             ('pt'    , np.float32 , 2     ) ,
             ('tri'   , np.bool    , 1     ) ,
+            ('col'   , np.uint8   , 3     ) ,
             ('track' , np.bool    , 1     )
             ])
 
@@ -94,11 +95,11 @@ def main():
             np.zeros(6), np.zeros(6), True
             )
 
-    db.frame.append(entry)
-    db.frame.append(entry)
-    db.frame.data[-1]['image'] += 1
-    print db.frame.data
-    print db.frame.size
+    # db.frame.append(entry)
+    # db.frame.append(entry)
+    # db.frame.data[-1]['image'] += 1
+    # print db.frame.data
+    # print db.frame.size
 
 if __name__ == '__main__':
     main()

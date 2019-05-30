@@ -326,7 +326,7 @@ class TwoView(object):
             # reset data
             self.data_ = dict(d_null)
             self.data_['R'] = R
-            self.data_['t'] = t
+            self.data_['t'] = 0.1 * t
 
             # evaluate permutation
             n_good, msk_cld = self.evaluate(crit)

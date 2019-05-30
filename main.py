@@ -75,6 +75,14 @@ def project_to_frame(cloud, frame, K, D):
             K, D)
     return res
 
+def extract_color(img, pt):
+    h, w = img.shape[:2]
+    idx = vm.rint(pt)[..., ::-1] # (x,y) -> (i,j)
+    idx = np.clip(idx, (0,0), (h-1,w-1)) # TODO : fix this hack
+    col = img[idx[:,0], idx[:,1]]
+    # TODO : support sampling window (NxN) average
+    return col
+
 class Pipeline(object):
     def __init__(self, cfg):
         self.cfg_       = self.build_cfg(cfg)
@@ -180,7 +188,7 @@ class Pipeline(object):
             P = 1e-6 * np.eye(self.cfg_['state_size'])
 
         frame = (index, img, x, P, is_kf, feat)
-        res = np.array(frame, dtype=self.db_.frame.dtype )
+        res = np.array(frame, dtype=self.db_.frame.dtype)
         return res
 
     def transition(self, new_state):
@@ -245,20 +253,22 @@ class Pipeline(object):
         cld1 = data['cld1'][cld_msk]
         # IMPORTANT : everything references **frame1** !!
         # (so frame0 geometric information is effectively ignored.)
+
+        col = extract_color(img1, pt1m[cld_msk])
         lmk_idx0 = self.db_.landmark.size
-        self.local_map_ = dict(
+        local_map = dict(
                 index   = lmk_idx0 + np.arange(len(cld1)), # landmark index
                 src     = np.full(len(cld1), frame1['index']), # source index
                 dsc     = feat1.dsc[mi1][cld_msk], # landmark descriptor
                 pos     = cld1, # landmark position [[ map frame ]]
-                pt      = pt1m, # tracking point initialization
+                pt      = pt1m[cld_msk], # tracking point initialization
                 tri     = np.ones(len(cld1), dtype=np.bool),
+                col     = col, # debug : point color information
                 track   = np.ones(len(cld1), dtype=np.bool) # trackin status
                 )
         self.db_.landmark.extend(zip(*[
-            self.local_map_[k] for k in self.db_.landmark.dtype.names]
+            local_map[k] for k in self.db_.landmark.dtype.names]
             ))
-        #print self.db_.landmark.size
 
         # unroll reconstruct information
         R   = data['R']
@@ -353,35 +363,43 @@ class Pipeline(object):
         landmark['track'][landmark['track'].nonzero()[0][~msk_t]] = False
         landmark['pt'][landmark['track']] = pt1_l
 
-        # debug ... 
-        pt_dbg = project_to_frame(landmark['pos'], frame1,
-                self.cfg_['K'], self.cfg_['D'])
-        img_dbg = draw_points(img1.copy(), pt_dbg)
-        cv2.imshow('dbg', img_dbg)
-
         # search additional points
         cld0_l = landmark['pos'][~landmark['track']]
         dsc_l  = landmark['dsc'][~landmark['track']]
-        if len(cld0_l) >= 16:
-            pt0_cld_l = project_to_frame(cld0_l, frame1,
-                    self.cfg_['K'], self.cfg_['D'])
-            mi0, mi1 = match_local(
-                    pt0_cld_l, feat1.pt,
-                    dsc_l, feat1.dsc
-                    )
 
-            # collect all paris
-            pt0  = np.concatenate([pt0_l, pt0_cld_l[mi0]], axis=0)
-            pt1  = np.concatenate([pt1_l, feat1.pt[mi1]], axis=0)
-            cld0 = np.concatenate([
+        #if len(cld0_l) >= 16:
+        #    pt0_cld_l = project_to_frame(cld0_l, frame1,
+        #            self.cfg_['K'], self.cfg_['D'])
+        #    mi0, mi1 = match_local(
+        #            pt0_cld_l, feat1.pt,
+        #            dsc_l, feat1.dsc
+        #            )
+
+        #    # collect all paris
+        #    pt0  = np.concatenate([pt0_l, pt0_cld_l[mi0]], axis=0)
+        #    pt1  = np.concatenate([pt1_l, feat1.pt[mi1]], axis=0)
+        #    cld0 = np.concatenate([
+        #        landmark['pos'][landmark['track']],
+        #        landmark['pos'][~landmark['track']][mi0]
+        #        ], axis=0)
+        #else:
+        pt0  = pt0_l
+        pt1  = pt1_l
+        cld0 = landmark['pos'][landmark['track']]
+
+        # debug ... 
+        pt_dbg = project_to_frame(
                 landmark['pos'][landmark['track']],
-                landmark['pos'][~landmark['track']][mi0]
-                ], axis=0)
-        else:
-            pt0  = pt0_l
-            pt1  = pt1_l
-            cld0 = landmark['pos'][landmark['track']]
-        print 'point ratio', print_ratio(len(pt0_l), len(pt0))
+                frame1,
+                self.cfg_['K'], self.cfg_['D'])
+        #img_dbg = draw_points(img1.copy(), pt_dbg, color=(255,0,0) )
+        #draw_points(img_dbg, pt1, color=(0,0,255) )
+        img_dbg = draw_matches(img1, img1, pt_dbg, pt1)
+                
+        cv2.imshow('dbg', img_dbg)
+
+        print_ratio(len(pt0_l), len(pt0), name='point source')
+        print('dbg')
 
         #if len(mi0) <= 0:
         #    viz1 = draw_points(img1.copy(), pt0)
@@ -398,16 +416,17 @@ class Pipeline(object):
         #        ) # T(rv,tv) . cld = cam
         #inl = None
         #print 'euler', tx.euler_from_matrix(cv2.Rodrigues(rvec)[0])
-        suc, rvec, tvec, inl = cv2.solvePnPRansac(
-                cld0, pt1,
+        _, rvec, tvec, inl = cv2.solvePnPRansac(
+                cld0[:,None], pt1[:,None],
                 self.cfg_['K'], self.cfg_['D'],
                 useExtrinsicGuess=False,
-                iterationsCount=16384,
+                iterationsCount=65535,
                 reprojectionError=1.0,
-                confidence=0.999,
+                confidence=0.9999,
                 flags=cv2.SOLVEPNP_EPNP
                 #minInliersCount=0.5*_['pt0']
                 )
+        suc = (inl is not None)
         #suc, rvec, tvec, inl = cv2.solvePnPRansac(
         #        cld0, pt1,
         #        self.cfg_['K'], self.cfg_['D'],
@@ -419,7 +438,7 @@ class Pipeline(object):
 
         if inl is not None:
             # print 'inl', inl
-            print 'pnp inlier', print_ratio(len(inl), len(cld0))
+            print_ratio(len(inl), len(cld0), name='pnp')
         
         # inversion?
         #R = cv2.Rodrigues(rvec)[0]
