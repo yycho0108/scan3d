@@ -38,6 +38,17 @@ class DenseRec(object):
             P1=None, P2=None, sparse=True,
             data={}
             ):
+        """
+        Compute Dense Reconstruction.
+
+        Returns:
+            cld (points)         : Reconstructed Point Cloud.
+            col (color)          : Corresponding Color.
+
+        Populates:
+            data['fimg'] (image) : Optical Flow Visualization
+            data['viz']  (image) : Match Visualization from draw_matches()
+        """
         # 1. flow
         mono1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
         mono2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
@@ -60,6 +71,11 @@ class DenseRec(object):
         pt0 = np.float32(pt0)
         pt1 = np.float32(pt1)
 
+        from matplotlib import pyplot as plt
+        #plt.plot(pt0[:,0], pt0[:,1], 'r.')
+        #plt.plot(pt1[:,0], pt1[:,1], 'g+')
+        #plt.show()
+
         # 3. filter
         pt0, pt1 = self.filter(pt0, pt1)
 
@@ -76,9 +92,13 @@ class DenseRec(object):
             P1 = np.concatenate([R,t.reshape(3,1)], axis=1)
             P2 = np.eye(3,4)
 
-        # 4. parse data
-        msk = data['msk_cld']
-        cld = data['cld1'][msk]
+            # 4. parse data
+            msk = data['msk_cld']
+            cld = data['cld1'][msk]
+        else:
+            cld = cvu.triangulate_points(self.K_.dot(P2), self.K_.dot(P1), pt1, pt0)
+            msk = np.ones(len(pt0), dtype=np.bool)
+
         idx = vm.rint(pt1[msk][...,::-1])
         idx = np.clip(idx, (0,0), (h-1,w-1))
         col = img2[idx[:,0], idx[:,1]]

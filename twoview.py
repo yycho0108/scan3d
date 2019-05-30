@@ -87,7 +87,7 @@ class TwoView(object):
                 e_max = 1.0, # max reprojection error
                 f_max = 0.99998, # max **cosine** parallax to be considered finite
                 t_min = 64, # minimum number of triangulated points
-                p_min = np.deg2rad(2.0), # minimum parallax to accept solution
+                p_min = np.deg2rad(1.0), # minimum parallax to accept solution
                 u_max = 0.7 # min ratio by which `unique` xfm must surpass alternatives
                 )
     def _H(_):
@@ -97,8 +97,8 @@ class TwoView(object):
             return None, None
         return cvu.H(_['pt1'], _['pt0'],
                 method=cv2.FM_RANSAC,
-                confidence=0.99,
-                ransacReprojThreshold=0.5
+                confidence=0.999,
+                ransacReprojThreshold=1.0
                 #prob=0.99,
                 #threshold=0.5
                 )
@@ -116,8 +116,8 @@ class TwoView(object):
             return None, None
         return cvu.E(_['pt1'], _['pt0'], _['K'],
                 method=cv2.FM_RANSAC,
-                prob=0.99,
-                threshold=0.5
+                prob=0.999,
+                threshold=1.0
                 )
     def E(_):
         """ Essential Matrix """
@@ -190,7 +190,8 @@ class TwoView(object):
             # compute cache
             fun = getattr(self, name, None)
             if fun is None:
-                raise ValueError('attempting to access an invalid compute path')
+                msg = 'Attempting to access an invalid compute path : {}'.format(name)
+                raise ValueError(msg)
             self.data_[name] = fun()
         # return cache
         return self.data_[name]
@@ -239,8 +240,30 @@ class TwoView(object):
         # "valid" triangulation mask
         msk_cld = np.logical_and(msk, ~msk_inf)
         # count of "good" points including infinity
-        n_good   = msk.sum()
+        n_good  = msk.sum()
         return n_good, msk_cld
+
+    def validate(_):
+        """ PnP Validation """
+        # print _['cld1'].shape
+        # print _['pt0'].shape
+        suc, rvec, tvec, inl = cv2.solvePnPRansac(
+                _['cld1'][:,None], _['pt0'][:,None],
+                _['K'], None,
+                useExtrinsicGuess=False,
+                iterationsCount=4096,
+                reprojectionError=1.0,
+                confidence=0.999,
+                flags=cv2.SOLVEPNP_ITERATIVE
+                )
+        suc = (suc and len(inl) > (0.5  * len(_['pt0'])))
+        print('rvec-ref', cv2.Rodrigues(_['R'])[0])
+        print('tvec-ref', _['t'])
+        print('rvec', rvec)
+        print('tvec', tvec)
+        if inl is None:
+            return False, 0
+        return suc, len(inl)
 
     def r_H(_):
         """ r_H (ratio to determine Homography/Essential Matrix model """
@@ -344,10 +367,13 @@ class TwoView(object):
         #else:
         #    p_det = np.sort(data['parallax'])[-crit['t_min']] >= crit['p_min']
 
+        pnp_suc, pnp_in = self.validate()
+
         det = dict(
                 num_pts = (n_best >= min_good),
                 uniq_xfm = (n_similar == 1),
-                parallax = p_det
+                parallax = p_det,
+                pnp_suc  = pnp_suc
                 )
         # override parallax flag
         # det['parallax'] = True
@@ -355,15 +381,17 @@ class TwoView(object):
         # debug log
         data['dbg-tv'] = """
         [TwoView Log]
-        model     : {} ({})
-        num_pts   : {} ({} / {}),
-        uniq_xfm  : {} ({} / {}),
-        parallax  : {} ({} / {})
+        model     : {} ({:4f})
+        num_pts   : {} ({} > {}),
+        uniq_xfm  : {} ({} = {}),
+        parallax  : {} ({} > {}),
+        pnp_suc   : {} ({} / {})
         """.format(
                 data['model'], data['r_H'],
                 det['num_pts'], n_best,  min_good,
                 det['uniq_xfm'], n_similar, 1,
-                det['parallax'], n_pgood, crit['t_min']
+                det['parallax'], n_pgood, crit['t_min'],
+                det['pnp_suc'], pnp_in, n_pt
                 )
         suc = np.logical_and.reduce(det.values())
         return suc, det
