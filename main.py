@@ -20,7 +20,7 @@ from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 from twoview import TwoView
-from reader.advio import AdvioReader
+from reader import AdvioReader, CVCameraReader
 from dense_rec import DenseRec
 
 # use recorded configuration
@@ -165,8 +165,10 @@ class Pipeline(object):
             return self.kf_.x.copy(), self.kf_.P.copy()
 
     def is_keyframe(self, frame):
+        # TODO : more robust keyframe heuristic
+        # == possibly filter for richness of tracking features?
         feat = (frame['feat']).item()
-        return len(feat.kpt) > 100
+        return len(feat.kpt) > 100 # TODO: arbitrary threshold
 
     def build_frame(self, img, stamp):
         """ build a simple frame """
@@ -201,8 +203,6 @@ class Pipeline(object):
 
     def init_ref(self, img, stamp, data):
         """ initialize reference """
-        # TODO : handle failure to initialize reference frame
-        # == possibly filter for richness of tracking features?
         frame = self.build_frame(img, stamp)
         if not self.is_keyframe(frame):
             # if not keyframe-worthy, continue trying initialization
@@ -342,11 +342,12 @@ class Pipeline(object):
             data['col_viz'] = col_viz[cdist < np.percentile(cdist, 95)]
             # cv2.imshow('flow', dr_data['viz'])
 
-
     def track(self, img, stamp, data={}):
         """ Track landmarks"""
         # unroll data
         # fetch frame pair
+        # TODO : add landmarks along the way
+        # TODO : update landmarks through optimization
         keyframe = self.db_.keyframe[-1] # last **keyframe**
         frame0 = self.db_.frame[-1] # last **frame**
         frame1 = self.build_frame(img, stamp)
@@ -390,7 +391,7 @@ class Pipeline(object):
                     dsc_l, feat1.dsc
                     )
 
-            # collect all paris
+            # collect all parts
             pt0  = np.concatenate([pt0_l, pt0_cld_l[mi0]], axis=0)
             pt1  = np.concatenate([pt1_l, feat1.pt[mi1]], axis=0)
             cld0 = np.concatenate([
@@ -402,6 +403,18 @@ class Pipeline(object):
             pt0  = pt0_l
             pt1  = pt1_l
             cld0 = landmark['pos'][landmark['track']]
+
+        # TODO : implement add_observations()
+        # obs_lmk_idx = np.concatenate([
+        #     landmark['index'][landmark['track']],
+        #     landmark['index'][~landmark['track']][mi0]
+        #     ], axis=0)
+        # add_observations(
+        #         frame1['index'], # observation frame source
+        #         obs_lmk_idx, # landmark index
+        #         pt1
+        #         )
+        
 
         # debug ... 
         #pt_dbg = project_to_frame(
@@ -445,7 +458,7 @@ class Pipeline(object):
             print_ratio(len(inl), len(cld0), name='pnp')
 
         # visualize match statistics
-        viz_pt0 = project_to_frame(cld0, keyframe,
+        viz_pt0 = project_to_frame(cld0, keyframe, # TODO: keyframe may no longer be true?
                 self.cfg_['K'], self.cfg_['D'])
         viz  = draw_matches(keyframe['image'], img1,
                 viz_pt0, pt1)
@@ -489,7 +502,6 @@ class Pipeline(object):
         #     frame1['cov']  = self.kf_.P
 
     def process(self, img, stamp, data={}):
-        # TODO : refactor (dt -> stamp)
         if self.state_ == PipelineState.IDLE:
             return
         if self.state_ == PipelineState.NEED_REF:
@@ -507,17 +519,16 @@ class Pipeline(object):
         np.save(D_('pose.npy'), self.db_.frame['pose'])
             
 def main():
-    #src = './scan_20190212-233625.h264'
-    #reader = CVCameraReader(src)
-    root = '/media/ssd/datasets/ADVIO'
-    reader = AdvioReader(root, idx=13)
-
+    src = './scan_20190212-233625.h264'
+    reader = CVCameraReader(src, K=CFG['K'])
+    #root = '/media/ssd/datasets/ADVIO'
+    #reader = AdvioReader(root, idx=13)
     # update configuration based on input
     cfg = dict(CFG)
     cfg['K'] = reader.meta_['K']
     cfg.update(reader.meta_)
 
-    reader.set_pos(1000)
+    reader.set_pos(0)
 
     pl  = Pipeline(cfg=cfg)
     cv2.namedWindow('viz', cv2.WINDOW_NORMAL)
