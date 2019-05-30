@@ -8,6 +8,12 @@ Feature = namedtuple('Feature',
         ['kpt', 'dsc', 'pt'],
         )
 
+L_POS = np.s_[0:3]
+L_VEL = np.s_[3:6]
+L_ACC = np.s_[6:9]
+A_POS = np.s_[9:12]
+A_VEL = np.s_[12:15]
+
 class DB(object):
     """
     Visual SLAM Database.

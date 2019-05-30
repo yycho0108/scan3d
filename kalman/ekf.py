@@ -77,7 +77,9 @@ def build_ekf(x0=None, P0=None,
         # and the estimation accuracy is compromised; In case of lower Q, the
         # better estimation accuracy is achieved and time lag may be introduced in the estimated value.
         # process noise
-        Q = 1e-3 * np.eye(15)
+        # from `robot_localization/params/ekf_template.yaml`
+        #Q = 1e-2 * np.eye(15)
+        Q = 1e-2 * np.diag([5,5,6,3,3,6,2.5,2.5,4,1,1,2,1,1,1.5])
 
     if R is None:
         # in general anticipate much lower heading error than positional error

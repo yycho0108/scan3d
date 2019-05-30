@@ -4,8 +4,10 @@ import numpy as np
 import cv2
 import pptk
 import time
+import os
 
 from db import DB, Feature
+from db import L_POS, L_VEL, L_ACC, A_POS, A_VEL
 from track import Tracker
 from match import Matcher, match_local
 from kalman.ekf import build_ekf
@@ -52,11 +54,11 @@ CFG = dict(
             crit            = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 0.03),
             flags           = 0,
             minEigThreshold = 1e-3
-            )
+            ),
+        kalman = True
         )
 
 from enum import Enum
-
 class PipelineState(Enum):
     IDLE     = 0 # default state: do nothing
     NEED_REF = 1 # need reference frame
@@ -65,8 +67,8 @@ class PipelineState(Enum):
     LOST     = 4 # lost and sad!
 
 def project_to_frame(cloud, frame, K, D):
-    rmat = tx.euler_matrix(*frame['pose'][9:12])[:3,:3]
-    R, t = rmat, frame['pose'][0:3]
+    rmat = tx.euler_matrix(*frame['pose'][A_POS])[:3,:3]
+    R, t = rmat, frame['pose'][L_POS]
     R, t = vm.Rti(R, t)
     cloud = np.float64(cloud)
     rvec = cv2.Rodrigues(R)[0].ravel()
@@ -135,8 +137,8 @@ class Pipeline(object):
     def motion_model(self, f0, f1, use_kf=False):
         if not use_kf:
             # simple `repetition` model
-            txn0, rxn0 = f0['pose'][0:3], f0['pose'][9:12]
-            txn1, rxn1 = f1['pose'][0:3], f1['pose'][9:12]
+            txn0, rxn0 = f0['pose'][L_POS], f0['pose'][A_POS]
+            txn1, rxn1 = f1['pose'][L_POS], f1['pose'][A_POS]
             R0 = tx.euler_matrix(*rxn0)
             R1 = tx.euler_matrix(*rxn1)
 
@@ -286,8 +288,8 @@ class Pipeline(object):
 
         #print( 'Rpriori', tx.euler_from_matrix(R))
         #R, t = vm.Rti(R, t)
-        frame1['pose'][0:3]  = t.ravel()
-        frame1['pose'][9:12] = tx.euler_from_matrix(R)
+        frame1['pose'][L_POS] = t.ravel()
+        frame1['pose'][A_POS] = tx.euler_from_matrix(R)
         #x, P = self.motion_model(
         #            f0 = self.db_.frame_[-2],
         #            f1 = frame1,
@@ -296,11 +298,11 @@ class Pipeline(object):
 
         # update frame data
         #[0pos,3vel,6acc,9rpos,12rvel]
-        frame1['pose'][0  : 3]  = 0.0 # t.reshape(-1)
-        frame1['pose'][3  : 6]  = 0.0 # reserve judgement about vel here.
-        frame1['pose'][6  : 9]  = 0.0 # reserve judgement about acc here.
-        frame1['pose'][9  : 12] = 0.0 # tx.euler_from_matrix(R) # TODO : apply proper R?
-        frame1['pose'][12 : 15] = 0.0 # reserve judgement about rvel here.
+        frame1['pose'][L_POS] = 0.0 # t.reshape(-1)
+        frame1['pose'][L_VEL] = 0.0 # reserve judgement about vel here.
+        frame1['pose'][L_ACC] = 0.0 # reserve judgement about acc here.
+        frame1['pose'][A_POS] = 0.0 # tx.euler_from_matrix(R) # TODO : apply proper R?
+        frame1['pose'][A_VEL] = 0.0 # reserve judgement about rvel here.
         frame1['is_kf'] = True # successful initialization, frame1 considered keyframe
         self.db_.frame.append( frame1 )
 
@@ -348,6 +350,8 @@ class Pipeline(object):
         keyframe = self.db_.keyframe[-1] # last **keyframe**
         frame0 = self.db_.frame[-1] # last **frame**
         frame1 = self.build_frame(img, stamp)
+        print('prior position',
+                frame1['pose'][L_POS], frame1['pose'][A_POS])
         landmark = self.db_.landmark
 
         img1  = frame1['image']
@@ -439,50 +443,50 @@ class Pipeline(object):
         print('pnp success : {}'.format(suc))
         if inl is not None:
             print_ratio(len(inl), len(cld0), name='pnp')
-        
-        # inversion?
-        #R = cv2.Rodrigues(rvec)[0]
-        #t = tvec
-        #R, t = vm.Rti(R, t)
-        #rvec = cv2.Rodrigues(R)[0]
-        #tvec = t
-        #pt0r = cvu.project_points(cld[mi0],
-        #        rvec, tvec,
-        #        self.cfg_['K'], self.cfg_['D'])
-        pt0_dbg = project_to_frame(cld0, keyframe,
+
+        # visualize match statistics
+        viz_pt0 = project_to_frame(cld0, keyframe,
                 self.cfg_['K'], self.cfg_['D'])
         viz  = draw_matches(keyframe['image'], img1,
-                pt0_dbg, pt1)
-        #viz  = draw_matches(
-        #        frame0['image'], img1,
-        #        self.db_.landmark[idx][mi0]['pt'], feat1.pt[mi1])
-        #print pt0[mi0] - feat1.pt[mi1]
-        #viz  = draw_matches(img1, img1,
-        #        pt0[mi0], feat1.pt[mi1])
-        cv2.imshow('pnp', viz)
+                viz_pt0, pt1)
+        data['viz'] = viz
               
         # obtained position!
         R   = cv2.Rodrigues(rvec)[0]
         t   = np.float32(tvec)
         R, t = vm.Rti(R, t)
+        rxn = np.reshape(tx.euler_from_matrix(R), 3)
+        txn = t.ravel()
+
         if suc:
             print('pnp-txn', t)
             print('pnp-rxn', tx.euler_from_matrix(R))
-            frame1['pose'][0:3] = t.ravel()
-            frame1['pose'][9:12] = tx.euler_from_matrix(R)
+            # motion_update()
+            if self.cfg_['kalman']:
+                # kalman_update()
+                self.kf_.x = frame0['pose']
+                self.kf_.P = frame0['cov']
+                self.kf_.predict( frame1['stamp'] - frame0['stamp'] )
+                self.kf_.update(np.concatenate([txn, rxn])) 
+                frame1['pose'] = self.kf_.x
+                frame1['cov']  = self.kf_.P
+            else:
+                # hard_update()
+                frame1['pose'][L_POS] = t.ravel()
+                frame1['pose'][A_POS] = tx.euler_from_matrix(R)
             self.db_.frame.append( frame1 )
 
-        if False:
-            # motion_update()
-            self.kf_.x = self.db_.frame[-2]['pose']
-            self.kf_.P = self.db_.frame[-2]['cov']
-            dt = (frame1['stamp'] - self.db_.frame[-2])
-            self.kf_.predict(dt)
-            self.kf_.update( np.concatenate([txn.ravel(), rxn.ravel()]) )
-            print 'pre', frame1['pose'][0:3], frame1['pose'][9:12]
-            frame1['pose'] = self.kf_.x
-            print 'post', frame1['pose'][0:3], frame1['pose'][9:12]
-            frame1['cov']  = self.kf_.P
+        # if False:
+        #     # motion_update()
+        #     self.kf_.x = self.db_.frame[-2]['pose']
+        #     self.kf_.P = self.db_.frame[-2]['cov']
+        #     dt = (frame1['stamp'] - self.db_.frame[-2])
+        #     self.kf_.predict(dt)
+        #     self.kf_.update( np.concatenate([txn.ravel(), rxn.ravel()]) )
+        #     print 'pre', frame1['pose'][L_POS], frame1['pose'][A_POS]
+        #     frame1['pose'] = self.kf_.x
+        #     print 'post', frame1['pose'][L_POS], frame1['pose'][A_POS]
+        #     frame1['cov']  = self.kf_.P
 
     def process(self, img, stamp, data={}):
         # TODO : refactor (dt -> stamp)
@@ -494,12 +498,19 @@ class Pipeline(object):
             return self.init_map(img, stamp, data)
         elif self.state_ == PipelineState.TRACK:
             return self.track(img, stamp, data)
+
+    def save(self, path):
+        # return self.db_.save(path)
+        if not os.path.exists(path):
+            os.makedirs(path)
+        D_ = lambda p : os.path.join(path, p)
+        np.save(D_('pose.npy'), self.db_.frame['pose'])
             
 def main():
     #src = './scan_20190212-233625.h264'
     #reader = CVCameraReader(src)
     root = '/media/ssd/datasets/ADVIO'
-    reader = AdvioReader(root, idx=2)
+    reader = AdvioReader(root, idx=13)
 
     # update configuration based on input
     cfg = dict(CFG)
@@ -522,7 +533,7 @@ def main():
         if pl.state_ != PipelineState.TRACK:
             k = cv2.waitKey(1)
         else:
-            k = cv2.waitKey(0)
+            k = cv2.waitKey(1)
         if k in [27, ord('q')]: break
 
         if ('col_viz' in data) and ('cld_viz' in data):
@@ -542,6 +553,8 @@ def main():
 
             plt.show()
             pass
+
+    pl.save('/tmp/db')
 
         #try:
         #    msk1 = data['msk_cld']
