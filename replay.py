@@ -7,7 +7,7 @@ from cho_util.viz.mpl import set_axes_equal
 from cho_util import vmath as vm
 from tf import transformations as tx
 
-def draw_pose(ax, p, a, s=0.01, style='-'):
+def draw_pose(ax, p, a, s=0.1, style='-'):
     o = p # translational origin
     V = np.eye(3) # orthogonal basis xyz
     R = tx.euler_matrix(*a, axes='rzyx')
@@ -24,7 +24,12 @@ rpy = pose[:, 9:12]
 
 ax = plt.gca(projection='3d')
 
-#xyz = vm.tx3( vm.tx.euler_matrix(-np.pi/2, 0, -np.pi/2), xyz)
+xyz = vm.tx3( vm.tx.euler_matrix(-np.pi/2, 0, -np.pi/2), xyz)
+cld = np.load('/tmp/db/map_pos.npy')
+col = np.load('/tmp/db/map_col.npy')
+ax.scatter(cld[:,0], cld[:,1], cld[:,2],
+        c = (col[...,::-1] / 255.0))
+
 ax.plot(xyz[:,0], xyz[:,1], xyz[:,2], '+-')
 ax.set_xlabel('x')
 ax.set_ylabel('y')

@@ -305,8 +305,9 @@ class Pipeline(object):
 
         col = extract_color(img1, pt1m[msk_cld])
         lmk_idx0 = self.db_.landmark.size
+        lmk_idx  = lmk_idx0 + np.arange(len(cld1))
         local_map = dict(
-                index   = lmk_idx0 + np.arange(len(cld1)), # landmark index
+                index   = lmk_idx, # landmark index
                 src     = np.full(len(cld1), frame1['index']), # source index
                 dsc     = feat1.dsc[mi1][msk_cld], # landmark descriptor
                 pos     = cld1, # landmark position [[ map frame ]]
@@ -318,6 +319,11 @@ class Pipeline(object):
         self.db_.landmark.extend(zip(*[
             local_map[k] for k in self.db_.landmark.dtype.names]
             ))
+        self.db_.observation.extend(zip(*[
+                    np.full_like(lmk_idx, frame1['index']), # observation frame source
+                    lmk_idx, # landmark index
+                    pt1m[msk_cld]
+                    ]))
 
         # unroll reconstruct information
         R   = data['R']
@@ -432,7 +438,8 @@ class Pipeline(object):
                     D=self.cfg_['D'])
             mi0, mi1 = match_local(
                     pt0_cld_l, feat1.pt,
-                    dsc_l, feat1.dsc
+                    dsc_l, feat1.dsc,
+                    hamming = (not feat1.dsc[0].dtype == np.float32)
                     )
 
             # collect all parts
@@ -510,7 +517,8 @@ class Pipeline(object):
             0 <= viz_pt0[:,1],
             viz_pt0[:,1] < self.cfg_['h'],
             ])
-        viz  = draw_matches(keyframe['image'], img1,
+        viz1 = draw_points(img1.copy(), feat1.pt)
+        viz  = draw_matches(keyframe['image'], viz1,
                 viz_pt0[viz_msk], pt1[viz_msk])
         data['viz'] = viz
               
@@ -546,7 +554,7 @@ class Pipeline(object):
                     ]))
 
         need_kf = ( (not suc) or (suc and (len(inl) < 256)) ) and self.is_keyframe(frame1)
-        run_ba  = need_kf # ?? other criteria for running bundle adjustment?
+        run_ba  = (frame1['index'] % 16) == 0 # ?? other criteria for running bundle adjustment?
 
         if run_ba:
             idx0, idx1 = keyframe['index'], frame1['index']
@@ -583,6 +591,8 @@ class Pipeline(object):
                     txn, rxn, lmk, self.cfg_['K']).compute(data=data_ba)       # << data
 
             if suc:
+                print('{}->{}'.format(txn, data_ba['txn']))
+                print('{}->{}'.format(rxn, data_ba['rxn']))
                 txn = data_ba['txn']
                 rxn = data_ba['rxn']
                 lmk = data_ba['lmk']
@@ -603,14 +613,22 @@ class Pipeline(object):
 
                 if suc_tv:
                     print('======================= NEW KEYFRAME ===')
+                    xfm0 = pose_to_xfm(self.db_.frame[index]['pose'])
+                    xfm1 = pose_to_xfm(frame1['pose'])
+                    scale_ref = np.linalg.norm(
+                            tx.translation_from_matrix(vm.Ti(xfm1).dot(xfm0))
+                            )
+                    scale_tv  = np.linalg.norm(data_tv['t'])
+                    # TODO : does NOT consider "duplicate" landmark identities
+
                     # IMPORTANT: frame1  is a `copy` of "last_frame"
                     #frame1['is_kf'] = True
-                    # TODO : does NOT consider "duplicate" landmark identities
                     self.db_.frame[-1]['is_kf'] = True
+
                     lmk_idx0 = self.db_.landmark.size
                     print 'lmk_idx0', lmk_idx0
                     msk_cld = data_tv['msk_cld']
-                    cld1 = data_tv['cld1'][msk_cld]
+                    cld1 = data_tv['cld1'][msk_cld] * (scale_ref / scale_tv)
                     cld = transform_cloud(cld1,
                             source_frame=frame1,
                             target_frame=mapframe,
@@ -633,19 +651,6 @@ class Pipeline(object):
                     break
             else:
                 print('Attempted new keyframe but failed')
-                #print(data_tv['dbg-tv'])
-
-        # if False:
-        #     # motion_update()
-        #     self.kf_.x = self.db_.frame[-2]['pose']
-        #     self.kf_.P = self.db_.frame[-2]['cov']
-        #     dt = (frame1['stamp'] - self.db_.frame[-2])
-        #     self.kf_.predict(dt)
-        #     self.kf_.update( np.concatenate([txn.ravel(), rxn.ravel()]) )
-        #     print 'pre', frame1['pose'][L_POS], frame1['pose'][A_POS]
-        #     frame1['pose'] = self.kf_.x
-        #     print 'post', frame1['pose'][L_POS], frame1['pose'][A_POS]
-        #     frame1['cov']  = self.kf_.P
 
     def process(self, img, stamp, data={}):
         if self.state_ == PipelineState.IDLE:
@@ -663,18 +668,20 @@ class Pipeline(object):
             os.makedirs(path)
         D_ = lambda p : os.path.join(path, p)
         np.save(D_('pose.npy'), self.db_.frame['pose'])
+        np.save(D_('map_pos.npy'), self.db_.landmark['pos'])
+        np.save(D_('map_col.npy'), self.db_.landmark['col'])
             
 def main():
     #src = './scan_20190212-233625.h264'
     #reader = CVCameraReader(src, K=CFG['K'])
     root = '/media/ssd/datasets/ADVIO'
-    reader = AdvioReader(root, idx=2)
+    reader = AdvioReader(root, idx=3)
     # update configuration based on input
     cfg = dict(CFG)
     cfg['K'] = reader.meta_['K']
     cfg.update(reader.meta_)
 
-    reader.set_pos(750)
+    reader.set_pos(1000)
     auto = True
 
     pl  = Pipeline(cfg=cfg)

@@ -21,9 +21,9 @@ class BundleAdjustment(object):
             ):
         self.crit_ = dict(
                 ftol=1e-4,
-                xtol=1e-8,#np.finfo(float).eps,
-                loss='linear',
-                max_nfev=1024,
+                xtol=1e-4,#np.finfo(float).eps,
+                loss='huber',
+                max_nfev=128,
                 method='trf',
                 verbose=2,
                 tr_solver='lsmr',
