@@ -43,7 +43,7 @@ def _CFG_K():
 
 # configuration
 CFG = dict(
-        scale = 0.5,
+        scale = 1.0,
         state_size = 15,
         K = _CFG_K(),
         pLK = dict(
@@ -86,7 +86,7 @@ def extract_color(img, pt):
 class Pipeline(object):
     def __init__(self, cfg):
         self.cfg_       = self.build_cfg(cfg)
-        self.extractor_ = cv2.ORB_create(1024, edgeThreshold=19)
+        self.extractor_ = cv2.ORB_create(2048, edgeThreshold=19)
         self.matcher_   = Matcher(ex=self.extractor_)
         self.tracker_   = Tracker(pLK=cfg['pLK'])
         self.kf_        = build_ekf()
@@ -132,7 +132,7 @@ class Pipeline(object):
         dsc_fmt  = (self.extractor_.descriptorSize(), dsc_t)
         return DB(img_fmt=img_fmt, dsc_fmt=dsc_fmt)
 
-    def motion_model(self, f0, f1, use_kf=False, dt=None):
+    def motion_model(self, f0, f1, use_kf=False):
         if not use_kf:
             # simple `repetition` model
             txn0, rxn0 = f0['pose'][0:3], f0['pose'][9:12]
@@ -158,6 +158,7 @@ class Pipeline(object):
             # dt MUST NOT BE None
             self.kf_.x = prv['pose']
             self.kf_.P = prv['cov']
+            dt = (f1['stamp'] - f0['stamp'])
             self.kf_.predict(dt)
             return self.kf_.x.copy(), self.kf_.P.copy()
 
@@ -165,7 +166,7 @@ class Pipeline(object):
         feat = (frame['feat']).item()
         return len(feat.kpt) > 100
 
-    def build_frame(self, img, dt=None):
+    def build_frame(self, img, stamp):
         """ build a simple frame """
         # automatic index assignment
         index = self.db_.frame.size
@@ -182,12 +183,12 @@ class Pipeline(object):
             x, P = self.motion_model(
                     f0 = self.db_.frame_[-2],
                     f1 = self.db_.frame_[-1],
-                    use_kf = False, dt=dt)
+                    use_kf = False)
         else:
             x = np.zeros(self.cfg_['state_size'])
             P = 1e-6 * np.eye(self.cfg_['state_size'])
 
-        frame = (index, img, x, P, is_kf, feat)
+        frame = (index, stamp, img, x, P, is_kf, feat)
         res = np.array(frame, dtype=self.db_.frame.dtype)
         return res
 
@@ -196,11 +197,11 @@ class Pipeline(object):
             self.state_, new_state))
         self.state_ = new_state
 
-    def init_ref(self, img, dt, data):
+    def init_ref(self, img, stamp, data):
         """ initialize reference """
         # TODO : handle failure to initialize reference frame
         # == possibly filter for richness of tracking features?
-        frame = self.build_frame(img)
+        frame = self.build_frame(img, stamp)
         if not self.is_keyframe(frame):
             # if not keyframe-worthy, continue trying initialization
             return
@@ -209,23 +210,30 @@ class Pipeline(object):
         self.db_.state_['track'] = (frame['feat']).item().pt
         self.transition( PipelineState.NEED_MAP )
 
-    def init_map(self, img, dt, data):
+    def init_map(self, img, stamp, data):
         """ initialize map """
         # fetch prv+cur frames
         # populate frame from motion model
         frame0 = self.db_.keyframe[-1] # last **keyframe**
         #frame0 = self.db_.frame[-2]
         # TODO : restore dt maybe
-        frame1 = self.build_frame(img)
+        frame1 = self.build_frame(img, stamp)
         #frame1 = self.db_.frame[-1]
 
-        #print('target pair : {}-{}'.format(
-        #    frame0['index'],
-        #    frame1['index']))
+        print('target pair : {:.2f}-{:.2f}'.format(
+            frame0['stamp'],
+            frame1['stamp']))
 
         # process ...
         img0, img1   = frame0['image'], frame1['image']
         feat0, feat1 = frame0['feat'],  frame1['feat'].item()
+
+        # bookkeeping: track reference points
+        # if tracking is `completely` lost then new keyframe is desired.
+        pt1_l, msk_t = self.tracker_.track(
+                img0, img1, self.db_.state['track'], return_msk=True)
+        self.db_.state['track'] = pt1_l[msk_t]
+        print('tracking state : {}'.format( len(self.db_.state['track'])))
 
         # match
         mi0, mi1 = self.matcher_.match(feat0.dsc, feat1.dsc,
@@ -236,8 +244,9 @@ class Pipeline(object):
         suc, det = TwoView(pt0m, pt1m, self.cfg_['K']).compute(data=data)
         print(data['dbg-tv'])
         if not suc:
+            data['viz'] = draw_matches(img0, img1, pt0m, pt1m)
             # unsuccessful frame-to-frame reconstruction
-            if not det['num_pts']:
+            if not len(self.db_.state['track']) >= 128:
                 # condition: `tracking lost`
                 # BEFORE sufficient parallax was observed.
                 # need to reset the reference frame.
@@ -332,16 +341,17 @@ class Pipeline(object):
             # cv2.imshow('flow', dr_data['viz'])
 
 
-    def track(self, img, dt, data={}):
+    def track(self, img, stamp, data={}):
         """ Track landmarks"""
         # unroll data
         # fetch frame pair
-        frame0 = self.db_.keyframe[-1] # last **keyframe**
-        frame1 = self.build_frame(img, dt=dt)
+        keyframe = self.db_.keyframe[-1] # last **keyframe**
+        frame0 = self.db_.frame[-1] # last **frame**
+        frame1 = self.build_frame(img, stamp)
         landmark = self.db_.landmark
 
-        img0  , img1  = frame0['image'] , frame1['image']
-        feat0 , feat1 = frame0['feat']  , frame1['feat'].item()
+        img1  = frame1['image']
+        feat1 = frame1['feat'].item()
 
         if self.nxt_ is not None:
             x, P = self.nxt_
@@ -353,7 +363,7 @@ class Pipeline(object):
         # bypass match_local if already tracking ...
         pt0_l = landmark['pt'][landmark['track']]
         pt1_l, msk_t = self.tracker_.track(
-                img0, img1, pt0_l, return_msk=True)
+                frame0['image'], img1, pt0_l, return_msk=True)
 
         # apply tracking mask
         pt0_l = pt0_l[msk_t]
@@ -367,39 +377,38 @@ class Pipeline(object):
         cld0_l = landmark['pos'][~landmark['track']]
         dsc_l  = landmark['dsc'][~landmark['track']]
 
-        #if len(cld0_l) >= 16:
-        #    pt0_cld_l = project_to_frame(cld0_l, frame1,
-        #            self.cfg_['K'], self.cfg_['D'])
-        #    mi0, mi1 = match_local(
-        #            pt0_cld_l, feat1.pt,
-        #            dsc_l, feat1.dsc
-        #            )
+        if len(cld0_l) >= 16:
+            # merge with projections
+            pt0_cld_l = project_to_frame(cld0_l, frame1,
+                    self.cfg_['K'], self.cfg_['D'])
+            mi0, mi1 = match_local(
+                    pt0_cld_l, feat1.pt,
+                    dsc_l, feat1.dsc
+                    )
 
-        #    # collect all paris
-        #    pt0  = np.concatenate([pt0_l, pt0_cld_l[mi0]], axis=0)
-        #    pt1  = np.concatenate([pt1_l, feat1.pt[mi1]], axis=0)
-        #    cld0 = np.concatenate([
-        #        landmark['pos'][landmark['track']],
-        #        landmark['pos'][~landmark['track']][mi0]
-        #        ], axis=0)
-        #else:
-        pt0  = pt0_l
-        pt1  = pt1_l
-        cld0 = landmark['pos'][landmark['track']]
+            # collect all paris
+            pt0  = np.concatenate([pt0_l, pt0_cld_l[mi0]], axis=0)
+            pt1  = np.concatenate([pt1_l, feat1.pt[mi1]], axis=0)
+            cld0 = np.concatenate([
+                landmark['pos'][landmark['track']],
+                landmark['pos'][~landmark['track']][mi0]
+                ], axis=0)
+        else:
+            # only use tracked points
+            pt0  = pt0_l
+            pt1  = pt1_l
+            cld0 = landmark['pos'][landmark['track']]
 
         # debug ... 
-        pt_dbg = project_to_frame(
-                landmark['pos'][landmark['track']],
-                frame1,
-                self.cfg_['K'], self.cfg_['D'])
-        #img_dbg = draw_points(img1.copy(), pt_dbg, color=(255,0,0) )
-        #draw_points(img_dbg, pt1, color=(0,0,255) )
-        img_dbg = draw_matches(img1, img1, pt_dbg, pt1)
-                
-        cv2.imshow('dbg', img_dbg)
-
+        #pt_dbg = project_to_frame(
+        #        landmark['pos'][landmark['track']],
+        #        frame1,
+        #        self.cfg_['K'], self.cfg_['D'])
+        ##img_dbg = draw_points(img1.copy(), pt_dbg, color=(255,0,0) )
+        ##draw_points(img_dbg, pt1, color=(0,0,255) )
+        #img_dbg = draw_matches(img1, img1, pt_dbg, pt1)
+        #cv2.imshow('dbg', img_dbg)
         print_ratio(len(pt0_l), len(pt0), name='point source')
-        print('dbg')
 
         #if len(mi0) <= 0:
         #    viz1 = draw_points(img1.copy(), pt0)
@@ -416,28 +425,19 @@ class Pipeline(object):
         #        ) # T(rv,tv) . cld = cam
         #inl = None
         #print 'euler', tx.euler_from_matrix(cv2.Rodrigues(rvec)[0])
-        _, rvec, tvec, inl = cv2.solvePnPRansac(
+        suc, rvec, tvec, inl = cv2.solvePnPRansac(
                 cld0[:,None], pt1[:,None],
                 self.cfg_['K'], self.cfg_['D'],
                 useExtrinsicGuess=False,
                 iterationsCount=65535,
-                reprojectionError=1.0,
-                confidence=0.9999,
+                reprojectionError=2.0,
+                confidence=0.999,
                 flags=cv2.SOLVEPNP_EPNP
                 #minInliersCount=0.5*_['pt0']
                 )
-        suc = (inl is not None)
-        #suc, rvec, tvec, inl = cv2.solvePnPRansac(
-        #        cld0, pt1,
-        #        self.cfg_['K'], self.cfg_['D'],
-        #        #iterationsCount=4096,
-        #        reprojectionError=0.1,
-        #        #confidence=0.99
-        #        )
+        suc = (suc and (inl is not None) and (len(inl) >= 0.25 * len(pt1)))
         print('pnp success : {}'.format(suc))
-
         if inl is not None:
-            # print 'inl', inl
             print_ratio(len(inl), len(cld0), name='pnp')
         
         # inversion?
@@ -449,9 +449,10 @@ class Pipeline(object):
         #pt0r = cvu.project_points(cld[mi0],
         #        rvec, tvec,
         #        self.cfg_['K'], self.cfg_['D'])
-
-        viz  = draw_matches(img1, img1,
-                pt0, pt1)
+        pt0_dbg = project_to_frame(cld0, keyframe,
+                self.cfg_['K'], self.cfg_['D'])
+        viz  = draw_matches(keyframe['image'], img1,
+                pt0_dbg, pt1)
         #viz  = draw_matches(
         #        frame0['image'], img1,
         #        self.db_.landmark[idx][mi0]['pt'], feat1.pt[mi1])
@@ -463,9 +464,10 @@ class Pipeline(object):
         # obtained position!
         R   = cv2.Rodrigues(rvec)[0]
         t   = np.float32(tvec)
-        #R, t = vm.Rti(R, t)
-
+        R, t = vm.Rti(R, t)
         if suc:
+            print('pnp-txn', t)
+            print('pnp-rxn', tx.euler_from_matrix(R))
             frame1['pose'][0:3] = t.ravel()
             frame1['pose'][9:12] = tx.euler_from_matrix(R)
             self.db_.frame.append( frame1 )
@@ -474,6 +476,7 @@ class Pipeline(object):
             # motion_update()
             self.kf_.x = self.db_.frame[-2]['pose']
             self.kf_.P = self.db_.frame[-2]['cov']
+            dt = (frame1['stamp'] - self.db_.frame[-2])
             self.kf_.predict(dt)
             self.kf_.update( np.concatenate([txn.ravel(), rxn.ravel()]) )
             print 'pre', frame1['pose'][0:3], frame1['pose'][9:12]
@@ -481,47 +484,39 @@ class Pipeline(object):
             print 'post', frame1['pose'][0:3], frame1['pose'][9:12]
             frame1['cov']  = self.kf_.P
 
-
-        #self.kf_.update(
-
-        #t_pt, t_idx = self.tracker_.track(img0, img1, self.db_.state_['track'])
-        #self.db_.state_['track'] = t_pt[t_idx]
-
-    def process(self, img, dt, data={}):
+    def process(self, img, stamp, data={}):
+        # TODO : refactor (dt -> stamp)
         if self.state_ == PipelineState.IDLE:
             return
         if self.state_ == PipelineState.NEED_REF:
-            return self.init_ref(img, dt, data)
+            return self.init_ref(img, stamp, data)
         elif self.state_ == PipelineState.NEED_MAP:
-            return self.init_map(img, dt, data)
+            return self.init_map(img, stamp, data)
         elif self.state_ == PipelineState.TRACK:
-            return self.track(img, dt, data)
+            return self.track(img, stamp, data)
             
 def main():
     #src = './scan_20190212-233625.h264'
     #reader = CVCameraReader(src)
     root = '/media/ssd/datasets/ADVIO'
-    reader = AdvioReader(root, idx=3)
+    reader = AdvioReader(root, idx=2)
 
     # update configuration based on input
     cfg = dict(CFG)
     cfg['K'] = reader.meta_['K']
     cfg.update(reader.meta_)
 
-    reader.set_pos(750)
+    reader.set_pos(1000)
 
     pl  = Pipeline(cfg=cfg)
     cv2.namedWindow('viz', cv2.WINDOW_NORMAL)
-    prv = 0.0
     while True:
         suc, idx, stamp, img = reader.read()
-        dt  = (stamp - prv)
-        prv = stamp
         #cv2.imshow('img', img)
         if not suc: break
         img = cv2.resize(img, None, fx=CFG['scale'], fy=CFG['scale'])
         data = {}
-        pl.process(img, dt, data)
+        pl.process(img, stamp, data)
         if 'viz' in data:
             cv2.imshow('viz', data['viz'])
         if pl.state_ != PipelineState.TRACK:

@@ -38,13 +38,14 @@ class DB(object):
 
         # instantiate data
         self.frame_ = NDRecord([
-            ('index' , np.int32   , 1           ) ,
-            ('image' , img_t      , img_s       ) ,
-            ('pose'  , np.float32 , 15          ) ,
-            ('cov'   , np.float32 , (15, 15 )   ) ,
-            ('is_kf' , np.bool    , 1           ) ,
-            ('feat'  , Feature    , 1           )
-            ])
+            ('index' , np.int32   , 1       ) ,
+            ('stamp' , np.float32 , 1       ) ,
+            ('image' , img_t      , img_s   ) ,
+            ('pose'  , np.float32 , 15      ) ,
+            ('cov'   , np.float32 , (15, 15)) ,
+            ('is_kf' , np.bool    , 1       ) ,
+            ('feat'  , Feature    , 1       )
+            ]                               )
         self.landmark_ = NDRecord([
             ('index' , np.int32   , 1     ) ,
             ('src'   , np.int32   , 1     ) ,
