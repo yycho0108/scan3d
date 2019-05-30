@@ -257,10 +257,10 @@ class TwoView(object):
                 flags=cv2.SOLVEPNP_ITERATIVE
                 )
         suc = (suc and len(inl) > (0.5  * len(_['pt0'])))
-        print('rvec-ref', cv2.Rodrigues(_['R'])[0])
-        print('tvec-ref', _['t'])
-        print('rvec', rvec)
-        print('tvec', tvec)
+        # print('rvec-ref', cv2.Rodrigues(_['R'])[0])
+        # print('tvec-ref', _['t'])
+        # print('rvec', rvec)
+        # print('tvec', tvec)
         if inl is None:
             return False, 0
         return suc, len(inl)

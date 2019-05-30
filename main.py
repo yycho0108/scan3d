@@ -23,6 +23,8 @@ from twoview import TwoView
 from reader import AdvioReader, CVCameraReader
 from dense_rec import DenseRec
 
+from optimize.ba import BundleAdjustment
+
 # use recorded configuration
 # avoid cluttering global namespace
 def _CFG_K():
@@ -66,10 +68,46 @@ class PipelineState(Enum):
     TRACK    = 3 # tracking!
     LOST     = 4 # lost and sad!
 
-def project_to_frame(cloud, frame, K, D):
-    rmat = tx.euler_matrix(*frame['pose'][A_POS])[:3,:3]
-    R, t = rmat, frame['pose'][L_POS]
-    R, t = vm.Rti(R, t)
+def pose_to_xfm(pose):
+    txn = pose[L_POS]
+    rxn = pose[A_POS]
+    return tx.compose_matrix(
+            angles = rxn,
+            translate = txn)
+
+def index_remap(idx):
+    # source = (0, 0, 2, 2, 2)
+    # uniq   = (0, 2)
+    # alt_idx = (0, 1)
+    # i_s2a   = [0, X, 1]
+    # i_a2s   = [0, 1],
+
+    ibw, i_new = np.lib.arraysetops.unique(idx,
+            return_inverse=True
+            )
+    return np.arange(len(ibw)), ibw, i_new
+
+def get_transform(source_frame, target_frame):
+    if source_frame is None:
+        # assume source=map
+        xfm_s2m = np.eye(4)
+    else:
+        xfm_s2m = pose_to_xfm( source_frame['pose'] )
+
+    xfm_t2m = pose_to_xfm( target_frame['pose'] )
+    xfm_s2t = tx.inverse_matrix(xfm_t2m).dot(xfm_s2m)
+
+    R = xfm_s2t[:3, :3]
+    t = xfm_s2t[:3, 3:]
+    return R, t
+
+def transform_cloud(cloud, source_frame, target_frame):
+    R, t = get_transform(source_frame, target_frame)
+    return vm.rtx3(R, t.ravel(), cloud)
+
+def project_to_frame(cloud, source_frame, target_frame, K, D):
+    R, t = get_transform(source_frame, target_frame)
+
     cloud = np.float64(cloud)
     rvec = cv2.Rodrigues(R)[0].ravel()
     tvec = np.float32(t).ravel()
@@ -260,22 +298,22 @@ class Pipeline(object):
             return
         
         # here, init successful
-        cld_msk = data['msk_cld']
-        cld1 = data['cld1'][cld_msk]
+        msk_cld = data['msk_cld']
+        cld1 = data['cld1'][msk_cld]
         # IMPORTANT : everything references **frame1** !!
         # (so frame0 geometric information is effectively ignored.)
 
-        col = extract_color(img1, pt1m[cld_msk])
+        col = extract_color(img1, pt1m[msk_cld])
         lmk_idx0 = self.db_.landmark.size
         local_map = dict(
                 index   = lmk_idx0 + np.arange(len(cld1)), # landmark index
                 src     = np.full(len(cld1), frame1['index']), # source index
-                dsc     = feat1.dsc[mi1][cld_msk], # landmark descriptor
+                dsc     = feat1.dsc[mi1][msk_cld], # landmark descriptor
                 pos     = cld1, # landmark position [[ map frame ]]
-                pt      = pt1m[cld_msk], # tracking point initialization
+                pt      = pt1m[msk_cld], # tracking point initialization
                 tri     = np.ones(len(cld1), dtype=np.bool),
                 col     = col, # debug : point color information
-                track   = np.ones(len(cld1), dtype=np.bool) # trackin status
+                track   = np.ones(len(cld1), dtype=np.bool) # tracking status
                 )
         self.db_.landmark.extend(zip(*[
             local_map[k] for k in self.db_.landmark.dtype.names]
@@ -296,6 +334,7 @@ class Pipeline(object):
         #            use_kf = False, dt=dt)
         self.nxt_ = frame1['pose'].copy(), frame1['cov'].copy() # TODO : get rid of this hack
 
+        # TODO : danger : if init_map() is NOT created from zero position, need to account for that
         # update frame data
         #[0pos,3vel,6acc,9rpos,12rvel]
         frame1['pose'][L_POS] = 0.0 # t.reshape(-1)
@@ -348,6 +387,7 @@ class Pipeline(object):
         # fetch frame pair
         # TODO : add landmarks along the way
         # TODO : update landmarks through optimization
+        mapframe = self.db_.keyframe[0] # first keyframe = map frame
         keyframe = self.db_.keyframe[-1] # last **keyframe**
         frame0 = self.db_.frame[-1] # last **frame**
         frame1 = self.build_frame(img, stamp)
@@ -359,13 +399,14 @@ class Pipeline(object):
         feat1 = frame1['feat'].item()
 
         if self.nxt_ is not None:
+            # TODO : get rid of this ugly hack
             x, P = self.nxt_
             print('x', x)
             frame1['pose'] = x
             frame1['cov'] = P
             self.nxt_ = None
 
-        # bypass match_local if already tracking ...
+        # bypass match_local for already tracking points ...
         pt0_l = landmark['pt'][landmark['track']]
         pt1_l, msk_t = self.tracker_.track(
                 frame0['image'], img1, pt0_l, return_msk=True)
@@ -384,8 +425,11 @@ class Pipeline(object):
 
         if len(cld0_l) >= 16:
             # merge with projections
-            pt0_cld_l = project_to_frame(cld0_l, frame1,
-                    self.cfg_['K'], self.cfg_['D'])
+            pt0_cld_l = project_to_frame(cld0_l,
+                    source_frame=mapframe,
+                    target_frame=frame1,
+                    K=self.cfg_['K'],
+                    D=self.cfg_['D'])
             mi0, mi1 = match_local(
                     pt0_cld_l, feat1.pt,
                     dsc_l, feat1.dsc
@@ -398,22 +442,19 @@ class Pipeline(object):
                 landmark['pos'][landmark['track']],
                 landmark['pos'][~landmark['track']][mi0]
                 ], axis=0)
+
+            obs_lmk_idx = np.concatenate([
+                landmark['index'][landmark['track']],
+                landmark['index'][~landmark['track']][mi0]
+                ], axis=0)
         else:
             # only use tracked points
             pt0  = pt0_l
             pt1  = pt1_l
             cld0 = landmark['pos'][landmark['track']]
 
-        # TODO : implement add_observations()
-        # obs_lmk_idx = np.concatenate([
-        #     landmark['index'][landmark['track']],
-        #     landmark['index'][~landmark['track']][mi0]
-        #     ], axis=0)
-        # add_observations(
-        #         frame1['index'], # observation frame source
-        #         obs_lmk_idx, # landmark index
-        #         pt1
-        #         )
+            obs_lmk_idx = landmark['index'][landmark['track']]
+
         
 
         # debug ... 
@@ -458,10 +499,19 @@ class Pipeline(object):
             print_ratio(len(inl), len(cld0), name='pnp')
 
         # visualize match statistics
-        viz_pt0 = project_to_frame(cld0, keyframe, # TODO: keyframe may no longer be true?
-                self.cfg_['K'], self.cfg_['D'])
+        viz_pt0 = project_to_frame(cld0,
+                source_frame=mapframe,
+                target_frame=keyframe, # TODO: keyframe may no longer be true?
+                K=self.cfg_['K'],
+                D=self.cfg_['D'])
+        viz_msk = np.logical_and.reduce([
+            0 <= viz_pt0[:,0],
+            viz_pt0[:,0] < self.cfg_['w'],
+            0 <= viz_pt0[:,1],
+            viz_pt0[:,1] < self.cfg_['h'],
+            ])
         viz  = draw_matches(keyframe['image'], img1,
-                viz_pt0, pt1)
+                viz_pt0[viz_msk], pt1[viz_msk])
         data['viz'] = viz
               
         # obtained position!
@@ -488,6 +538,102 @@ class Pipeline(object):
                 frame1['pose'][L_POS] = t.ravel()
                 frame1['pose'][A_POS] = tx.euler_from_matrix(R)
             self.db_.frame.append( frame1 )
+
+            self.db_.observation.extend(zip(*[
+                    np.full_like(obs_lmk_idx, frame1['index']), # observation frame source
+                    obs_lmk_idx, # landmark index
+                    pt1
+                    ]))
+
+        need_kf = ( (not suc) or (suc and (len(inl) < 256)) ) and self.is_keyframe(frame1)
+        run_ba  = need_kf # ?? other criteria for running bundle adjustment?
+
+        if run_ba:
+            idx0, idx1 = keyframe['index'], frame1['index']
+            obs = self.db_.observation
+            msk = np.logical_and(
+                    idx0 <= obs['src_idx'],
+                    obs['src_idx'] < idx1)
+
+            # parse observation
+            i_src = obs['src_idx'][msk]
+            print('i_src', i_src)
+            i_lmk = obs['lmk_idx'][msk]
+            p_obs = obs['point'][msk]
+
+            # index pruning relevant sources
+            i_src_alt, i_a2s, i_s2a = index_remap(i_src)
+            i_lmk_alt, i_a2l, i_l2a = index_remap(i_lmk)
+
+            # 1. select targets based on new index
+            i_src     = i_s2a
+            i_lmk     = i_l2a
+            frames    = self.db_.frame[i_a2s[i_src_alt]]
+            landmarks = self.db_.landmark[i_a2l[i_lmk_alt]]
+
+            # parse data
+            txn       = frames['pose'][:, L_POS]
+            rxn       = frames['pose'][:, A_POS]
+            lmk       = landmarks['pos']
+
+            data_ba = {}
+            # NOTE : txn/rxn will be internally inverted to reduce duplicate compute.
+            suc = BundleAdjustment(
+                    i_src, i_lmk, p_obs, # << observation
+                    txn, rxn, lmk, self.cfg_['K']).compute(data=data_ba)       # << data
+
+            if suc:
+                txn = data_ba['txn']
+                rxn = data_ba['rxn']
+                lmk = data_ba['lmk']
+                self.db_.frame['pose'][i_a2s[i_src_alt], L_POS] = txn
+                self.db_.frame['pose'][i_a2s[i_src_alt], A_POS] = rxn
+                self.db_.landmark['pos'][i_a2l[i_lmk_alt]]      = lmk
+
+        if need_kf:
+            for index in reversed(range(keyframe['index'], frame1['index'])):
+                feat0, feat1 = self.db_.frame[index]['feat'], frame1['feat'].item()
+                mi0, mi1 = self.matcher_.match(
+                        feat0.dsc, feat1.dsc,
+                        lowe=0.8, fold=False)
+                data_tv = {}
+                suc_tv, det_tv = TwoView(feat0.pt[mi0],
+                        feat1.pt[mi1],
+                        self.cfg_['K']).compute(data=data_tv)
+
+                if suc_tv:
+                    print('======================= NEW KEYFRAME ===')
+                    # IMPORTANT: frame1  is a `copy` of "last_frame"
+                    #frame1['is_kf'] = True
+                    # TODO : does NOT consider "duplicate" landmark identities
+                    self.db_.frame[-1]['is_kf'] = True
+                    lmk_idx0 = self.db_.landmark.size
+                    print 'lmk_idx0', lmk_idx0
+                    msk_cld = data_tv['msk_cld']
+                    cld1 = data_tv['cld1'][msk_cld]
+                    cld = transform_cloud(cld1,
+                            source_frame=frame1,
+                            target_frame=mapframe,
+                            )
+                    col = extract_color(frame1['image'], feat1.pt[mi1][msk_cld])
+                    local_map = dict(
+                            index   = lmk_idx0 + np.arange(len(cld)), # landmark index
+                            src     = np.full(len(cld), frame1['index']), # source index
+                            dsc     = feat1.dsc[mi1][msk_cld], # landmark descriptor
+                            pos     = cld, # landmark position [[ map frame ]]
+                            pt      = feat1.pt[mi1][msk_cld], # tracking point initialization
+                            tri     = np.ones(len(cld), dtype=np.bool),
+                            col     = col, # debug : point color information
+                            track   = np.ones(len(cld), dtype=np.bool) # tracking status
+                            )
+                    # hmm?
+                    self.db_.landmark.extend(zip(*[
+                        local_map[k] for k in self.db_.landmark.dtype.names]
+                        ))
+                    break
+            else:
+                print('Attempted new keyframe but failed')
+                #print(data_tv['dbg-tv'])
 
         # if False:
         #     # motion_update()
@@ -519,16 +665,17 @@ class Pipeline(object):
         np.save(D_('pose.npy'), self.db_.frame['pose'])
             
 def main():
-    src = './scan_20190212-233625.h264'
-    reader = CVCameraReader(src, K=CFG['K'])
-    #root = '/media/ssd/datasets/ADVIO'
-    #reader = AdvioReader(root, idx=13)
+    #src = './scan_20190212-233625.h264'
+    #reader = CVCameraReader(src, K=CFG['K'])
+    root = '/media/ssd/datasets/ADVIO'
+    reader = AdvioReader(root, idx=2)
     # update configuration based on input
     cfg = dict(CFG)
     cfg['K'] = reader.meta_['K']
     cfg.update(reader.meta_)
 
-    reader.set_pos(0)
+    reader.set_pos(750)
+    auto = True
 
     pl  = Pipeline(cfg=cfg)
     cv2.namedWindow('viz', cv2.WINDOW_NORMAL)
@@ -541,11 +688,10 @@ def main():
         pl.process(img, stamp, data)
         if 'viz' in data:
             cv2.imshow('viz', data['viz'])
-        if pl.state_ != PipelineState.TRACK:
-            k = cv2.waitKey(1)
-        else:
-            k = cv2.waitKey(1)
+        k = cv2.waitKey(1 if auto else 0)
         if k in [27, ord('q')]: break
+        if k in [ord(' ')]:
+            auto = (not auto)
 
         if ('col_viz' in data) and ('cld_viz' in data):
             cld = data['cld_viz']

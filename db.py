@@ -62,6 +62,11 @@ class DB(object):
             ('col'   , np.uint8   , 3     ) ,
             ('track' , np.bool    , 1     )
             ])
+        self.observation_ = NDRecord([
+            ('src_idx', np.int32, 1),
+            ('lmk_idx', np.int32, 1),
+            ('point' , np.float32, 2)
+            ])
 
         # current frame state
         self.state_ = {
@@ -76,6 +81,9 @@ class DB(object):
     @property
     def landmark(self):
         return self.landmark_
+    @property
+    def observation(self):
+        return self.observation_
     @property
     def state(self):
         return self.state_
