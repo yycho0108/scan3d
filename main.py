@@ -25,6 +25,8 @@ from dense_rec import DenseRec
 
 from optimize.ba import BundleAdjustment
 
+from profilehooks import profile
+
 # use recorded configuration
 # avoid cluttering global namespace
 def _CFG_K():
@@ -387,6 +389,7 @@ class Pipeline(object):
             data['col_viz'] = col_viz[cdist < np.percentile(cdist, 95)]
             # cv2.imshow('flow', dr_data['viz'])
 
+    @profile(sort='cumtime')
     def track(self, img, stamp, data={}):
         """ Track landmarks"""
         # unroll data
@@ -397,8 +400,8 @@ class Pipeline(object):
         keyframe = self.db_.keyframe[-1] # last **keyframe**
         frame0 = self.db_.frame[-1] # last **frame**
         frame1 = self.build_frame(img, stamp)
-        print('prior position',
-                frame1['pose'][L_POS], frame1['pose'][A_POS])
+        # print('prior position',
+        #         frame1['pose'][L_POS], frame1['pose'][A_POS])
         landmark = self.db_.landmark
 
         img1  = frame1['image']
@@ -473,7 +476,7 @@ class Pipeline(object):
         ##draw_points(img_dbg, pt1, color=(0,0,255) )
         #img_dbg = draw_matches(img1, img1, pt_dbg, pt1)
         #cv2.imshow('dbg', img_dbg)
-        print_ratio(len(pt0_l), len(pt0), name='point source')
+        #print_ratio(len(pt0_l), len(pt0), name='point source')
 
         #if len(mi0) <= 0:
         #    viz1 = draw_points(img1.copy(), pt0)
@@ -490,18 +493,29 @@ class Pipeline(object):
         #        ) # T(rv,tv) . cld = cam
         #inl = None
         #print 'euler', tx.euler_from_matrix(cv2.Rodrigues(rvec)[0])
+
+        T_i = tx.inverse_matrix(
+                tx.compose_matrix(
+                    translate=frame1['pose'][L_POS],
+                    angles=frame1['pose'][A_POS]
+                    ))
+        rvec0 = cv2.Rodrigues(T_i[:3,:3])[0]
+        tvec0 = T_i[:3,3:]
+
         suc, rvec, tvec, inl = cv2.solvePnPRansac(
                 cld0[:,None], pt1[:,None],
                 self.cfg_['K'], self.cfg_['D'],
-                useExtrinsicGuess=False,
+                useExtrinsicGuess=True,
+                rvec=rvec0,
+                tvec=tvec0,
                 iterationsCount=65535,
                 reprojectionError=2.0,
                 confidence=0.999,
-                flags=cv2.SOLVEPNP_EPNP
+                flags=cv2.SOLVEPNP_ITERATIVE
                 #minInliersCount=0.5*_['pt0']
                 )
         suc = (suc and (inl is not None) and (len(inl) >= 0.25 * len(pt1)))
-        print('pnp success : {}'.format(suc))
+        #print('pnp success : {}'.format(suc))
         if inl is not None:
             print_ratio(len(inl), len(cld0), name='pnp')
 
@@ -530,8 +544,8 @@ class Pipeline(object):
         txn = t.ravel()
 
         if suc:
-            print('pnp-txn', t)
-            print('pnp-rxn', tx.euler_from_matrix(R))
+            # print('pnp-txn', t)
+            # print('pnp-rxn', tx.euler_from_matrix(R))
             # motion_update()
             if self.cfg_['kalman']:
                 # kalman_update()
@@ -552,9 +566,15 @@ class Pipeline(object):
                     obs_lmk_idx, # landmark index
                     pt1
                     ]))
+        x = 1
 
-        need_kf = ( (not suc) or (suc and (len(inl) < 256)) ) and self.is_keyframe(frame1)
-        run_ba  = (frame1['index'] % 16) == 0 # ?? other criteria for running bundle adjustment?
+        need_kf = np.logical_or.reduce([
+            not suc,  # PNP failed -- try new keyframe
+            suc and (len(inl) < 256), # PNP was decent but would be better to have a new frame
+            (frame1['index'] - keyframe['index'] > 32) and (msk_t.sum() < 256) # = frame is somewhat stale
+            ]) and self.is_keyframe(frame1)
+
+        run_ba  = (frame1['index'] % 16) == 0 # ?? better criteria for running BA?
 
         if run_ba:
             idx0, idx1 = keyframe['index'], frame1['index']
@@ -591,8 +611,8 @@ class Pipeline(object):
                     txn, rxn, lmk, self.cfg_['K']).compute(data=data_ba)       # << data
 
             if suc:
-                print('{}->{}'.format(txn, data_ba['txn']))
-                print('{}->{}'.format(rxn, data_ba['rxn']))
+                #print('{}->{}'.format(txn, data_ba['txn']))
+                #print('{}->{}'.format(rxn, data_ba['rxn']))
                 txn = data_ba['txn']
                 rxn = data_ba['rxn']
                 lmk = data_ba['lmk']
@@ -675,7 +695,7 @@ def main():
     #src = './scan_20190212-233625.h264'
     #reader = CVCameraReader(src, K=CFG['K'])
     root = '/media/ssd/datasets/ADVIO'
-    reader = AdvioReader(root, idx=3)
+    reader = AdvioReader(root, idx=2)
     # update configuration based on input
     cfg = dict(CFG)
     cfg['K'] = reader.meta_['K']

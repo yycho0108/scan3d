@@ -53,7 +53,8 @@ def main():
     #sm.pprint(jac)
 
     agg = pt.row_join(jac)
-    rdc1, cex1 = sm.cse(agg, order='none')
+    sm.simplify(agg)
+    rdc1, cex1 = sm.cse(sm.simplify(agg), order='none')
     for ex,v in rdc1:
         print '{}={}'.format(ex,v)
     cex1 = cex1[0]

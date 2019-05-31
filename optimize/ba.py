@@ -5,7 +5,7 @@ from scipy.sparse import lil_matrix, csr_matrix
 from cho_util import vmath as vm
 from autograd import jacobian
 from autograd import numpy as anp
-from expr import project
+from expr import project, Projector
 
 from profilehooks import profile
 
@@ -25,7 +25,7 @@ class BundleAdjustment(object):
                 ftol=1e-4,
                 xtol=1e-4,#np.finfo(float).eps,
                 loss='huber',
-                max_nfev=2,
+                max_nfev=1024,
                 method='trf',
                 verbose=2,
                 tr_solver='lsmr',
@@ -81,14 +81,9 @@ class BundleAdjustment(object):
 
         return txn, rxn, lmk
 
-    #def project(self, txn, rxn, lmk):
-    #    pt3 = txn + rotate(rxn, lmk)
-    #    pt2 = vm.from_h(pt3.dot(self.K_.T)) # == [K.dot(p) for p in pt3]
-    #    return pt2
-
     def jacobian(self, params):
         txn, rxn, lmk = BundleAdjustment.unroll(params, self.n_src_, self.n_lmk_)
-        point, jac_txn, jac_rxn, jac_lmk = self.project(params, jac=True)
+        jac_txn, jac_rxn, jac_lmk = self.project(params, jac=True)
 
         n_out = self.n_obs_*BundleAdjustment.D_OBS
         n_in  = self.n_src_*(BundleAdjustment.D_RXN + BundleAdjustment.D_TXN)
@@ -101,32 +96,29 @@ class BundleAdjustment(object):
         jac_rxn = np.transpose(jac_rxn, (2,0,1))
         jac_lmk = np.transpose(jac_lmk, (2,0,1))
 
-        #J_res = lil_matrix((n_out, n_in))
         i_obs = np.arange(self.n_obs_)
 
         r_i = []
         c_i = []
         v   = [] 
-        
         for i_o in range(self.D_OBS): # iterate over point (x,y)
             for i_c in range(self.D_TXN): # iterate over txn-3
-                r_i = np.r_[r_i, i_obs*self.D_OBS+i_o]
-                c_i = np.r_[c_i, self.i_src_*self.D_TXN+i_c]
-                v   = np.r_[v  , jac_txn[:,i_o,i_c]]
-                #J_res[i_obs*self.D_OBS+i_o, self.i_src_*self.D_TXN+i_c] = jac_txn[:,i_o,i_c]
+                r_i.append(i_obs*self.D_OBS+i_o)
+                c_i.append(self.i_src_*self.D_TXN+i_c)
+                v  .append(jac_txn[:,i_o,i_c])
             for i_c in range(self.D_RXN): # iterate over rxn-3
-                r_i = np.r_[r_i, i_obs*self.D_OBS+i_o]
-                c_i = np.r_[c_i, (self.n_src_*self.D_TXN)+self.i_src_*self.D_RXN+i_c]
-                v   = np.r_[v  , jac_rxn[:,i_o,i_c]]
-                #J_res[i_obs*self.D_OBS+i_o, (self.n_src_*self.D_TXN)+self.i_src_*self.D_RXN+i_c] = jac_rxn[:,i_o,i_c]
+                r_i.append(i_obs*self.D_OBS+i_o)
+                c_i.append((self.n_src_*self.D_TXN)+self.i_src_*self.D_RXN+i_c)
+                v  .append(jac_rxn[:,i_o,i_c])
             for i_l in range(self.D_LMK): # iterate over landmark-3
-                r_i = np.r_[r_i, i_obs*self.D_OBS+i_o]
-                c_i = np.r_[c_i, (self.n_src_*self.D_TXN+self.n_src_*self.D_RXN)+self.i_lmk_*self.D_LMK+i_l]
-                v   = np.r_[v  , jac_lmk[:,i_o,i_l]]
-                #J_res[i_obs*self.D_OBS+i_o, (self.n_src_*self.D_TXN+self.n_src_*self.D_RXN)+self.i_lmk_*self.D_LMK+i_l] = jac_lmk[:,i_o,i_l]
-        #res = J_res.tocsr()
-
+                r_i.append(i_obs*self.D_OBS+i_o)
+                c_i.append((self.n_src_*self.D_TXN+self.n_src_*self.D_RXN)+self.i_lmk_*self.D_LMK+i_l)
+                v  .append(jac_lmk[:,i_o,i_l])
+        r_i = np.concatenate(r_i)
+        c_i = np.concatenate(c_i)
+        v   = np.concatenate(v)
         res = csr_matrix((v, (r_i, c_i)), shape=(n_out, n_in))
+        print ('jacsum', res.sum())
 
         # print('res', res.todense())
         # res1 = res.todense()
@@ -151,11 +143,17 @@ class BundleAdjustment(object):
         return res
 
     def project(self, params, np=np, jac=False):
+        # split data
         txn, rxn, lmk = BundleAdjustment.unroll(params, self.n_src_, self.n_lmk_)
+        # format data
         txn = txn[self.i_src_]
         rxn = rxn[self.i_src_]
         lmk = lmk[self.i_lmk_]
+        # project
         res = project(txn,rxn,lmk,self.K_, np=np, jac=jac)
+        #data = {}
+        #res = Projector(txn,rxn,lmk,self.K_).compute(np=np, jac=jac, data=data)
+        #print data.keys()
         return res
 
     def residual(self, params, np=np):
@@ -163,7 +161,7 @@ class BundleAdjustment(object):
         p_prj = np.stack(p_prj,axis=-1)
         return (p_prj - self.p_obs_).ravel()
 
-    @profile
+    #@profile
     def compute(self, crit={}, data={}):
         # criteria (local copy)
         tmp = self.crit_.copy()
@@ -201,7 +199,7 @@ class BundleAdjustment(object):
 
 def main():
     np.random.seed(0)
-    n_pt = 47
+    n_pt = 4096
     i_src = np.concatenate([np.full(n_pt, 0), np.full(n_pt, 1)])
     i_lmk = np.concatenate([np.arange(n_pt), np.arange(n_pt)])
     p_obs = np.random.uniform((0,0),(640,480),size=(2*n_pt,2))
