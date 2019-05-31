@@ -228,7 +228,7 @@ class Pipeline(object):
 
         # match
         mi0, mi1 = self.matcher_.match(feat0.dsc, feat1.dsc,
-                lowe=0.8, fold=False) # harsh lowe to avoid pattern collision
+                lowe=0.6, fold=False) # harsh lowe to avoid pattern collision
         pt0m = feat0.pt[mi0]
         pt1m = feat1.pt[mi1]
         
@@ -480,10 +480,11 @@ class Pipeline(object):
                 rvec=rvec0,
                 tvec=tvec0,
                 iterationsCount=1024,
-                reprojectionError=2.0,
+                reprojectionError=1.0,
                 confidence=0.999,
-                #flags=cv2.SOLVEPNP_EPNP
-                flags=cv2.SOLVEPNP_ITERATIVE
+                flags=cv2.SOLVEPNP_EPNP
+                #flags=cv2.SOLVEPNP_DLS
+                #flags=cv2.SOLVEPNP_ITERATIVE
                 #minInliersCount=0.5*_['pt0']
                 )
 
@@ -546,16 +547,16 @@ class Pipeline(object):
 
         need_kf = np.logical_or.reduce([
             not suc,  # PNP failed -- try new keyframe
-            suc and (n_pnp_out < 128), # PNP was decent but would be better to have a new frame
+            suc and (n_pnp_out < 256), # PNP was decent but would be better to have a new frame
             (frame1['index'] - keyframe['index'] > 32) and (msk_t.sum() < 256) # = frame is somewhat stale
             ]) and self.is_keyframe(frame1)
 
-        run_ba = (frame1['index'] % 16) == 0 # ?? better criteria for running BA?
+        run_ba = (frame1['index'] % 8) == 0 # ?? better criteria for running BA?
         #run_ba = False
         #run_ba = need_kf
 
         if run_ba:
-            idx0, idx1 = max(keyframe['index'], frame1['index']-16), frame1['index']
+            idx0, idx1 = max(keyframe['index'], frame1['index']-8), frame1['index']
             #idx0, idx1 = keyframe['index'], frame1['index']
             obs = self.db_.observation
             msk = np.logical_and(
@@ -675,7 +676,7 @@ def main():
     #src = './scan_20190212-233625.h264'
     #reader = CVCameraReader(src, K=CFG['K'])
     root = '/media/ssd/datasets/ADVIO'
-    reader = AdvioReader(root, idx=6)
+    reader = AdvioReader(root, idx=2)
     # update configuration based on input
     cfg = dict(CFG)
     cfg['K'] = reader.meta_['K']

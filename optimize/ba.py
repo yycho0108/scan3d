@@ -24,8 +24,8 @@ class BundleAdjustment(object):
             ):
         self.crit_ = dict(
                 ftol=1e-4,
-                xtol=1e-4,#np.finfo(float).eps,
-                loss='huber',
+                xtol=1e-4,
+                loss='soft_l1',
                 max_nfev=1024,
                 method='trf',
                 verbose=2,

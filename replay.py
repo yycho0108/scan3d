@@ -5,7 +5,7 @@ from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from cho_util.viz.mpl import set_axes_equal
 from cho_util import vmath as vm
-from cho_util.viz.draw import draw_points
+from cho_util.viz.draw import draw_points, draw_matches
 from tf import transformations as tx
 from db import DB
 from util import *
@@ -45,12 +45,17 @@ def draw_frame(ax, frame, db, cfg):
     xyz = cld['pos']
     col = cld['col']
 
+    draw_points(img, frame['feat'].pt, color=(0,255,0))
+
     if len(xyz) > 0:
+        # red = projected points
         pt2 = project_to_frame(xyz, map_frame, frame,
                 cfg['K'], cfg['D'])
-        img = draw_points(img, pt2, color=(0,0,255) )
+        img = draw_matches(img, img, pt2, obs['point'],
+                single=True)
 
-    draw_points(img, frame['feat'].pt, color=(255,0,0))
+        #draw_points(img, pt2, color=(0,0,255) )
+        #draw_points(img, obs['point'], color=(255,0,0))
 
     ax_img = sub_axis(ax, [0.0, 0.0, 0.5, 1.0])
     ax_img.imshow(img[..., ::-1])
@@ -78,7 +83,9 @@ def draw_map(ax, frame, db, cfg):
     # draw (3d)
     ax3 = sub_axis(ax, [0.0, 0.0, 1.0, 0.5], projection='3d')
     ax3.scatter(xyz[:,0], xyz[:,1], xyz[:,2],
-            c = (col[...,::-1] / 255.0))
+            s = 0.1,
+            c = (col[...,::-1] / 255.0),
+            )
     for fr in db.frame:
         xfm_pose = pose_to_xfm(fr['pose'])
         txn = tx.translation_from_matrix(xfm_pose)
@@ -92,7 +99,9 @@ def draw_map(ax, frame, db, cfg):
     ax2 = sub_axis(ax, [0.0, 0.5, 1.0, 0.5])
     xyz = vm.tx3(T_R, xyz)
     ax2.scatter(xyz[:,0], xyz[:,1],
-            c = (col[...,::-1] / 255.0))
+            s = 0.1,
+            c = (col[...,::-1] / 255.0)
+            )
     for fr in db.frame:
         xfm_pose = pose_to_xfm(fr['pose'])
         r_xfm_pose = T_R.dot(xfm_pose)
@@ -139,10 +148,12 @@ def main():
     cld  = db.landmark['pos']
     col  = db.landmark['col']
 
+    fig = plt.figure(dpi=200)
+
     for frame in db.frame:
         print frame['index']
-        plt.clf()
-        ax = plt.gca()
+        fig.clf()
+        ax = fig.gca()
         ax.cla()
 
         ax1 = plt.subplot2grid((1,2), (0,0), 1, 1)
