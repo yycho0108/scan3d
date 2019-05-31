@@ -45,6 +45,7 @@ def match_local(pt1, pt2, dsc1, dsc2,
 
     # apply max distance mask
     msk  = (d < maxd )
+    print(np.median(d))
     idx1 = idx1[msk]
     d    = d[msk]
     idx2 = idx2[msk]

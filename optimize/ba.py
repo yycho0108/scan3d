@@ -11,6 +11,10 @@ from profilehooks import profile
 from rot import axa_to_q, q_to_axa, rpy_to_q, q_to_rpy
 
 class BundleAdjustment(object):
+    """
+    Bundle Adjustment!
+
+    """
     # static dimensions
     D_OBS = 2
     D_TXN = 3
@@ -20,7 +24,9 @@ class BundleAdjustment(object):
     def __init__(self,
             i_src, i_lmk, p_obs,
             txn, rxn, lmk,
-            K
+            K,
+            pose_only=False,
+            axa=False
             ):
         self.crit_ = dict(
                 ftol=1e-4,
@@ -32,6 +38,9 @@ class BundleAdjustment(object):
                 tr_solver='lsmr',
                 f_scale=1.0
                 )
+        self.pose_only_ = pose_only
+        self.axa_       = axa
+
         # input - observation
         self.i_src_ = i_src
         self.i_lmk_ = i_lmk
@@ -67,44 +76,50 @@ class BundleAdjustment(object):
         rxn = np.float32(rxn)
         return txn, rxn
 
-    @staticmethod
-    def roll(txn, rxn, lmk):
+    #@staticmethod
+    def roll(self, txn, rxn, lmk):
+        if self.pose_only_:
+            return np.concatenate([txn.ravel(), rxn.ravel()])
         return np.concatenate([txn.ravel(), rxn.ravel(), lmk.ravel()])
 
-    @staticmethod
-    def unroll(params, n_src, n_lmk):
+    #@staticmethod
+    def unroll(self, params, n_src, n_lmk):
         i0 = 0
         i1 = (i0 + BundleAdjustment.D_TXN * n_src)
         i2 = (i1 + BundleAdjustment.D_RXN * n_src)
-        i3 = (i2 + BundleAdjustment.D_LMK * n_lmk)
-
         txn = params[i0:i1].reshape(-1,3)
         rxn = params[i1:i2].reshape(-1,3)
-        lmk = params[i2:i3].reshape(-1,3)
 
+        if self.pose_only_:
+            return txn, rxn, self.lmk_
+
+        i3 = (i2 + BundleAdjustment.D_LMK * n_lmk)
+        lmk = params[i2:i3].reshape(-1,3)
         return txn, rxn, lmk
 
-    @staticmethod
-    def parametrize(txn, rxn):
+    #@staticmethod
+    def parametrize(self, txn, rxn):
         # RPY -> Rodrigues
-        rxn = q_to_axa(rpy_to_q(rxn))
+        if self.axa_:
+            rxn = q_to_axa(rpy_to_q(rxn))
         return txn, rxn
 
-    @staticmethod
-    def unparametrize(txn, rxn):
+    #@staticmethod
+    def unparametrize(self, txn, rxn):
         # Rodrigues -> RPY
-        rxn = q_to_rpy(axa_to_q(rxn))
+        if self.axa_:
+            rxn = q_to_rpy(axa_to_q(rxn))
         return txn, rxn
 
     def jacobian(self, params):
-        txn, rxn, lmk = BundleAdjustment.unroll(params, self.n_src_, self.n_lmk_)
+        txn, rxn, lmk = self.unroll(params, self.n_src_, self.n_lmk_)
         jac_txn, jac_rxn, jac_lmk = self.project(params, jac=True)
 
         n_out = self.n_obs_*BundleAdjustment.D_OBS
         n_in  = self.n_src_*(BundleAdjustment.D_RXN + BundleAdjustment.D_TXN)
-        n_in += self.n_lmk_*(BundleAdjustment.D_LMK)
+        if not self.pose_only_:
+            n_in += self.n_lmk_*(BundleAdjustment.D_LMK)
         
-        j0_shape = (self.n_obs_, BundleAdjustment.D_OBS, n_in)
         j_shape = (n_out, n_in)
 
         jac_txn = np.transpose(jac_txn, (2,0,1))
@@ -125,6 +140,10 @@ class BundleAdjustment(object):
                 r_i.append(i_obs*self.D_OBS+i_o)
                 c_i.append((self.n_src_*self.D_TXN)+self.i_src_*self.D_RXN+i_c)
                 v  .append(jac_rxn[:,i_o,i_c])
+
+            if self.pose_only_:
+                continue
+
             for i_l in range(self.D_LMK): # iterate over landmark-3
                 r_i.append(i_obs*self.D_OBS+i_o)
                 c_i.append((self.n_src_*self.D_TXN+self.n_src_*self.D_RXN)+self.i_lmk_*self.D_LMK+i_l)
@@ -137,6 +156,7 @@ class BundleAdjustment(object):
         # print('res', res.todense())
         # res1 = res.todense()
         # res = np.zeros(shape=j_shape, dtype=np.float32)
+        # j0_shape = (self.n_obs_, BundleAdjustment.D_OBS, n_in)
         # tmp = res.reshape(j0_shape)
         # txn_end = self.n_src_*BundleAdjustment.D_TXN
         # rxn_end = txn_end + self.n_src_ * BundleAdjustment.D_RXN
@@ -158,14 +178,18 @@ class BundleAdjustment(object):
 
     def project(self, params, np=np, jac=False):
         # split data
-        txn, rxn, lmk = BundleAdjustment.unroll(params, self.n_src_, self.n_lmk_)
+        txn, rxn, lmk = self.unroll(params, self.n_src_, self.n_lmk_)
         # format data
         txn = txn[self.i_src_]
         rxn = rxn[self.i_src_]
         lmk = lmk[self.i_lmk_]
+
         # project
-        #res = project(txn,rxn,lmk,self.K_, np=np, jac=jac)
-        res = project_axa(txn,rxn,lmk,self.K_, np=np, jac=jac)
+        if self.axa_:
+            res = project_axa(txn,rxn,lmk,self.K_, np=np, jac=jac)
+        else:
+            res = project(txn,rxn,lmk,self.K_, np=np, jac=jac)
+
         #data = {}
         #res = Projector(txn,rxn,lmk,self.K_).compute(np=np, jac=jac, data=data)
         #print data.keys()

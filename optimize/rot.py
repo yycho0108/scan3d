@@ -75,6 +75,11 @@ def q_to_axa(q):
         ax = np.nan_to_num(ax)
     return h * ax
 
+def axa_to_rpy(axa):
+    return q_to_rpy(axa_to_q(axa))
+def rpy_to_axa(rpy):
+    return q_to_axa(rpy_to_q(rpy))
+
 def main():
     q = np.random.normal(size=(2048,4))
     q /= np.linalg.norm(q, axis=-1, keepdims=True)

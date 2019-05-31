@@ -137,7 +137,7 @@ def draw_pose(ax, p, a, s=0.1, style='-', alpha=1.0):
         ax.plot([o[0],o[0]+s*uy[0]], [o[1],o[1]+s*uy[1]], 'g'+style, alpha=alpha)
         ax.plot([o[0],o[0]+s*uz[0]], [o[1],o[1]+s*uz[1]], 'b'+style, alpha=alpha)
 
-#@profile
+@profile
 def main():
     db = DB(path='/tmp/db')
     db.load('/tmp/db')

@@ -28,6 +28,7 @@ from optimize.ba import BundleAdjustment
 from profilehooks import profile
 
 from util import *
+from optimize.rot import axa_to_q, q_to_axa, rpy_to_q, q_to_rpy
 
 # use recorded configuration
 # avoid cluttering global namespace
@@ -53,7 +54,7 @@ def _CFG_K():
 CFG = dict(
         scale = 1.0,
         state_size = 15,
-        K = _CFG_K(),
+        K = None,
         pLK = dict(
             winSize         = (31,31),
             maxLevel        = 4,
@@ -78,6 +79,7 @@ class Pipeline(object):
     def __init__(self, cfg):
         self.cfg_       = self.build_cfg(cfg)
         self.extractor_ = cv2.ORB_create(2048, edgeThreshold=19)
+        #self.extractor_ = cv2.xfeatures2d.SURF_create()
         self.matcher_   = Matcher(ex=self.extractor_)
         self.tracker_   = Tracker(pLK=cfg['pLK'])
         self.kf_        = build_ekf()
@@ -227,8 +229,10 @@ class Pipeline(object):
         print('tracking state : {}'.format( len(self.db_.state['track'])))
 
         # match
-        mi0, mi1 = self.matcher_.match(feat0.dsc, feat1.dsc,
-                lowe=0.6, fold=False) # harsh lowe to avoid pattern collision
+        mi0, mi1 = self.matcher_.match(
+                feat0.dsc, feat1.dsc,
+                lowe=0.8, fold=False
+                ) # harsh lowe to avoid pattern collision
         pt0m = feat0.pt[mi0]
         pt1m = feat1.pt[mi1]
         
@@ -339,6 +343,54 @@ class Pipeline(object):
             data['col_viz'] = col_viz[cdist < np.percentile(cdist, 95)]
             # cv2.imshow('flow', dr_data['viz'])
 
+    def bundle_adjust(self, frame0, frame1):
+        idx0, idx1 = max(frame0['index'], frame1['index']-8), frame1['index']
+        #idx0, idx1 = keyframe['index'], frame1['index']
+        obs = self.db_.observation
+        msk = np.logical_and(
+                idx0 <= obs['src_idx'],
+                obs['src_idx'] <= idx1)
+
+        # parse observation
+        i_src = obs['src_idx'][msk]
+        #print('i_src', i_src)
+        i_lmk = obs['lmk_idx'][msk]
+        p_obs = obs['point'][msk]
+
+        # index pruning relevant sources
+        i_src_alt, i_a2s, i_s2a = index_remap(i_src)
+        i_lmk_alt, i_a2l, i_l2a = index_remap(i_lmk)
+
+        # 1. select targets based on new index
+        i_src     = i_s2a
+        i_lmk     = i_l2a
+        frames    = self.db_.frame[i_a2s[i_src_alt]]
+        landmarks = self.db_.landmark[i_a2l[i_lmk_alt]]
+
+        # parse data
+        txn       = frames['pose'][:, L_POS]
+        rxn       = frames['pose'][:, A_POS]
+        lmk       = landmarks['pos']
+
+        data_ba = {}
+        # NOTE : txn/rxn will be internally inverted to reduce duplicate compute.
+        suc = BundleAdjustment(
+                i_src, i_lmk, p_obs, # << observation
+                txn, rxn, lmk, self.cfg_['K'],
+                axa = True
+                ).compute(data=data_ba)       # << data
+
+        if suc:
+            # TODO : apply post-processing kalman filter?
+            #print('{}->{}'.format(txn, data_ba['txn']))
+            #print('{}->{}'.format(rxn, data_ba['rxn']))
+            txn = data_ba['txn']
+            rxn = data_ba['rxn']
+            lmk = data_ba['lmk']
+            self.db_.frame['pose'][i_a2s[i_src_alt], L_POS] = txn
+            self.db_.frame['pose'][i_a2s[i_src_alt], A_POS] = rxn
+            self.db_.landmark['pos'][i_a2l[i_lmk_alt]]      = lmk
+
     @profile(sort='cumtime')
     def track(self, img, stamp, data={}):
         """ Track landmarks"""
@@ -399,31 +451,37 @@ class Pipeline(object):
                 pt0_cld_l[..., 1] < self.cfg_['h'],
                 ])
 
-        if (msk_prj is not None) and msk_prj.sum() >= 16:
+        pt0  = pt0_l
+        pt1  = pt1_l
+        cld0 = landmark['pos'][landmark['track']]
+        obs_lmk_idx = landmark['index'][landmark['track']]
+
+        search_map = (
+                len(cld0) <= 256 and
+                (msk_prj is not None) and
+                (msk_prj.sum() >= 16)
+                )
+
+        if search_map:
+            # sample points from the map
             mi0, mi1 = match_local(
                     pt0_cld_l[msk_prj], feat1.pt,
                     dsc_l[msk_prj], feat1.dsc,
-                    hamming = (not feat1.dsc.dtype == np.float32)
+                    hamming = (not feat1.dsc.dtype == np.float32),
                     )
 
             # collect all parts
-            pt0  = np.concatenate([pt0_l, pt0_cld_l[msk_prj][mi0]], axis=0)
-            pt1  = np.concatenate([pt1_l, feat1.pt[mi1]], axis=0)
+            pt0  = np.concatenate([pt0, pt0_cld_l[msk_prj][mi0]], axis=0)
+            pt1  = np.concatenate([pt1, feat1.pt[mi1]], axis=0)
             cld0 = np.concatenate([
-                landmark['pos'][landmark['track']],
+                cld0,
                 landmark['pos'][~landmark['track']][msk_prj][mi0]
                 ], axis=0)
 
             obs_lmk_idx = np.concatenate([
-                landmark['index'][landmark['track']],
+                obs_lmk_idx,
                 landmark['index'][~landmark['track']][msk_prj][mi0]
                 ], axis=0)
-        else:
-            # only use tracked points
-            pt0  = pt0_l
-            pt1  = pt1_l
-            cld0 = landmark['pos'][landmark['track']]
-            obs_lmk_idx = landmark['index'][landmark['track']]
 
         
 
@@ -473,20 +531,53 @@ class Pipeline(object):
         else:
             cld_pnp, pt1_pnp = cld0, pt1
 
-        suc, rvec, tvec, inl = cv2.solvePnPRansac(
-                cld_pnp[:,None], pt1_pnp[:,None],
-                self.cfg_['K'], self.cfg_['D'],
-                useExtrinsicGuess=True,
-                rvec=rvec0,
-                tvec=tvec0,
-                iterationsCount=1024,
-                reprojectionError=1.0,
-                confidence=0.999,
-                flags=cv2.SOLVEPNP_EPNP
-                #flags=cv2.SOLVEPNP_DLS
-                #flags=cv2.SOLVEPNP_ITERATIVE
-                #minInliersCount=0.5*_['pt0']
-                )
+        # hmm ... pose-only BA vs. PnP
+        if False:
+            data_pnp = {}
+            #print('txn-prv', frame0['pose'][L_POS])
+            #print('rxn-prv', frame0['pose'][A_POS])
+            #print('txn-in', frame1['pose'][L_POS])
+            #print('rxn-in', frame1['pose'][A_POS])
+            suc = BundleAdjustment(
+                    i_src = np.full(len(cld_pnp), 0),
+                    i_lmk = np.arange(len(cld_pnp)),
+                    p_obs = pt1_pnp,
+                    txn   = frame1['pose'][L_POS][None,...],
+                    rxn   = frame1['pose'][A_POS][None,...],
+                    lmk   = cld_pnp,
+                    K     = self.cfg_['K'],
+                    pose_only=True).compute(
+                            crit=dict(loss='soft_l1', xtol=1e-8, f_scale=np.sqrt(5.991)),
+                            data=data_pnp)
+            #print('txn-out', data_pnp['txn'][0])
+            #print('rxn-out', data_pnp['rxn'][0])
+            T    = tx.compose_matrix(
+                    translate=data_pnp['txn'][0],
+                    angles=data_pnp['rxn'][0])
+            Ti   = tx.inverse_matrix(T)
+            rxn_pnp  = np.float32(tx.euler_from_matrix(Ti))
+            txn_pnp  = tx.translation_from_matrix(Ti)
+            rvec = cv2.Rodrigues(Ti[:3,:3])[0]
+            tvec = txn_pnp
+            prj  = cvu.project_points(cld_pnp, rvec, tvec,
+                    self.cfg_['K'], self.cfg_['D'])
+            err  = vm.norm(prj - pt1_pnp)
+            inl  = np.where(err <= 1.0)[0]
+        else:
+            suc, rvec, tvec, inl = cv2.solvePnPRansac(
+                    cld_pnp[:,None], pt1_pnp[:,None],
+                    self.cfg_['K'], self.cfg_['D'],
+                    useExtrinsicGuess=True,
+                    rvec=rvec0,
+                    tvec=tvec0,
+                    iterationsCount=1024,
+                    reprojectionError=1.0,
+                    confidence=0.999,
+                    flags=cv2.SOLVEPNP_EPNP
+                    #flags=cv2.SOLVEPNP_DLS
+                    #flags=cv2.SOLVEPNP_ITERATIVE
+                    #minInliersCount=0.5*_['pt0']
+                    )
 
         n_pnp_in  = len(cld_pnp)
         n_pnp_out = len(inl) if (inl is not None) else 0
@@ -536,71 +627,28 @@ class Pipeline(object):
                 # hard_update()
                 frame1['pose'][L_POS] = t.ravel()
                 frame1['pose'][A_POS] = tx.euler_from_matrix(R)
-            self.db_.frame.append( frame1 )
 
             self.db_.observation.extend(zip(*[
                     np.full_like(obs_lmk_idx, frame1['index']), # observation frame source
                     obs_lmk_idx, # landmark index
                     pt1
                     ]))
+        self.db_.frame.append( frame1 )
         x = 1
 
         need_kf = np.logical_or.reduce([
             not suc,  # PNP failed -- try new keyframe
-            suc and (n_pnp_out < 256), # PNP was decent but would be better to have a new frame
+            suc and (n_pnp_out < 128), # PNP was decent but would be better to have a new frame
             (frame1['index'] - keyframe['index'] > 32) and (msk_t.sum() < 256) # = frame is somewhat stale
             ]) and self.is_keyframe(frame1)
+        #need_kf = False
 
         run_ba = (frame1['index'] % 8) == 0 # ?? better criteria for running BA?
         #run_ba = False
         #run_ba = need_kf
 
         if run_ba:
-            idx0, idx1 = max(keyframe['index'], frame1['index']-8), frame1['index']
-            #idx0, idx1 = keyframe['index'], frame1['index']
-            obs = self.db_.observation
-            msk = np.logical_and(
-                    idx0 <= obs['src_idx'],
-                    obs['src_idx'] <= idx1)
-
-            # parse observation
-            i_src = obs['src_idx'][msk]
-            print('i_src', i_src)
-            i_lmk = obs['lmk_idx'][msk]
-            p_obs = obs['point'][msk]
-
-            # index pruning relevant sources
-            i_src_alt, i_a2s, i_s2a = index_remap(i_src)
-            i_lmk_alt, i_a2l, i_l2a = index_remap(i_lmk)
-
-            # 1. select targets based on new index
-            i_src     = i_s2a
-            i_lmk     = i_l2a
-            frames    = self.db_.frame[i_a2s[i_src_alt]]
-            landmarks = self.db_.landmark[i_a2l[i_lmk_alt]]
-
-            # parse data
-            txn       = frames['pose'][:, L_POS]
-            rxn       = frames['pose'][:, A_POS]
-            lmk       = landmarks['pos']
-
-            data_ba = {}
-            # NOTE : txn/rxn will be internally inverted to reduce duplicate compute.
-            suc = BundleAdjustment(
-                    i_src, i_lmk, p_obs, # << observation
-                    txn, rxn, lmk, self.cfg_['K']).compute(data=data_ba)       # << data
-
-            if suc:
-                # TODO : apply post-processing kalman filter?
-
-                #print('{}->{}'.format(txn, data_ba['txn']))
-                #print('{}->{}'.format(rxn, data_ba['rxn']))
-                txn = data_ba['txn']
-                rxn = data_ba['rxn']
-                lmk = data_ba['lmk']
-                self.db_.frame['pose'][i_a2s[i_src_alt], L_POS] = txn
-                self.db_.frame['pose'][i_a2s[i_src_alt], A_POS] = rxn
-                self.db_.landmark['pos'][i_a2l[i_lmk_alt]]      = lmk
+            self.bundle_adjust(keyframe, frame1)
 
         if need_kf:
             for index in reversed(range(keyframe['index'], frame1['index'])):
@@ -609,7 +657,8 @@ class Pipeline(object):
                         feat0.dsc, feat1.dsc,
                         lowe=0.8, fold=False)
                 data_tv = {}
-                suc_tv, det_tv = TwoView(feat0.pt[mi0],
+                suc_tv, det_tv = TwoView(
+                        feat0.pt[mi0],
                         feat1.pt[mi1],
                         self.cfg_['K']).compute(data=data_tv)
 
@@ -712,6 +761,7 @@ def main():
             # optical -> base 
             cld = vm.tx3( vm.tx.euler_matrix(-np.pi/2, 0, -np.pi/2), cld)
             ax = plt.gca(projection='3d')
+            ax.cla()
             ax.scatter(cld[:,0], cld[:,1], cld[:,2],
                     c = (col[...,::-1] / 255.0))
 

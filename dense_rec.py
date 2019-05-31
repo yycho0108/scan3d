@@ -71,7 +71,7 @@ class DenseRec(object):
         pt0 = np.float32(pt0)
         pt1 = np.float32(pt1)
 
-        from matplotlib import pyplot as plt
+        #from matplotlib import pyplot as plt
         #plt.plot(pt0[:,0], pt0[:,1], 'r.')
         #plt.plot(pt1[:,0], pt1[:,1], 'g+')
         #plt.show()
