@@ -5,6 +5,16 @@ import cv2
 from cho_util import vmath as vm
 from tf import transformations as tx
 
+def rotate_axa(rxn, lmk):
+    # axis-angle (rodrigues) rotation
+    v = lmk
+    h = np.linalg.norm(rxn, axis=-1, keepdims=True)
+    with np.errstate(invalid='ignore'):
+        u = np.nan_to_num(rxn / h)
+    c, s  = np.cos(h), np.sin(h)
+    d = (u*v).sum(axis=-1, keepdims=True)
+    return (v*c) + s*np.cross(u,v) + (1.-c)*(d) * u
+
 class Projector(object):
     def __init__(self, txn, rxn, lmk, K):
         self.data_ = dict(
@@ -171,78 +181,161 @@ def project(txn, rxn, lmk, K, np=np, jac=False):
     c0 = np.zeros_like(x)
 
     x0=np.sin(P)
-    x1=px*x0
-    x2=np.cos(P)
-    x3=np.cos(R)
-    x4=pz*x3
-    x5=np.sin(R)
-    x6=x2*x5
-    x7=py*x6 - x1 + x2*x4 + z
-    x8=1./x7
+    x1=np.cos(P)
+    x2=np.cos(R)
+    x3=x1*x2
+    x4=np.sin(R)
+    x5=py*x4
+    x6=-px*x0 + pz*x3 + x1*x5
+    x7=x6 + z
+    x8=1/x7
     x9=np.cos(Y)
-    x10=px*x2
+    x10=px*x1
     x11=np.sin(Y)
-    x12=x11*x5
-    x13=x3*x9
+    x12=x11*x4
+    x13=x2*x9
     x14=x0*x13 + x12
-    x15=x11*x3
-    x16=x5*x9
-    x17=x0*x16
-    x18=-x15 + x17
-    x19=py*x18 + pz*x14 + x10*x9
-    x20=cx*x7 + fx*(x + x19)
-    x21=fx*x8
-    x22=x7**(-2)
-    x23=x20*x22
-    x24=pz*x6
-    x25=x2*x3
-    x26=py*x25
-    x27=x24 - x26
-    x28=-x24 + x26
-    x29=x0*x4
-    x30=py*x0*x5
-    x31=x10 + x29 + x30
-    x32=py*x2
-    x33=pz*x2
-    x34=-x10 - x29 - x30
-    x35=x10*x11
-    x36=x0*x12
-    x37=-x13 - x36
-    x38=x0*x15
-    x39=x13 + x36
-    x40=-x16 + x38
-    x41=cy*x7 + fy*(py*x39 + pz*x40 + x35 + y)
-    x42=fy*x8
-    x43=x22*x41
-    x44=cy*x2
+    x15=x11*x2
+    x16=x4*x9
+    x17=x0*x16 - x15
+    x18=py*x17 + pz*x14 + x10*x9
+    x19=x8*(cx*x7 + fx*(x + x18))
+    x20=fx*x8
+    x21=x1*(py*x2 - pz*x4)
+    x22=pz*x0*x2 + x0*x5 + x10
+    x23=fx*x9
+    x24=x0*x12 + x13
+    x25=x0*x15 - x16
+    x26=py*x24 + pz*x25 + x10*x11
+    x27=x1*x4
+    x28=x8*(cy*x7 + fy*(x26 + y))
+    x29=fy*x8
+    x30=fy*x11
+
     if (not jac):
-        point = ([x20*x8, x41*x8])
+        point = [x19, x28]
         return point
     else:
-        j_txn = ([[x21, c0, cx*x8 - x23], [c0, x42, cy*x8 - x43]])
-        j_rxn = ([[x23*x27 + x8*(cx*x28 + fx*(py*x14 + pz*(x15 - x17))), x23*x31 + x8*(cx*x34 + fx*(-x1*x9 + x13*x33 + x16*x32)), x21*(py*x37 + pz*(x16 - x38) - x35)], [x27*x43 + x8*(cy*x28 + fy*(py*x40 + pz*x37)), x31*x43 + x8*(cy*x34 + fy*(-x1*x11 + x12*x32 + x15*x33)), x19*x42]])
-        j_lmk = ([[x0*x23 + x8*(-cx*x0 + fx*x2*x9), -x23*x6 + x8*(cx*x6 + fx*x18), -x23*x25 + x8*(cx*x25 + fx*x14)], [x0*x43 + x8*(-cy*x0 + fy*x11*x2), -x43*x6 + x8*(fy*x39 + x44*x5), -x25*x43 + x8*(fy*x40 + x3*x44)]])
+        j_txn = [[x20, c0, x8*(cx - x19)], [c0, x29, x8*(cy - x28)]]
+        j_rxn = [[x8*(cx*x21 + fx*(py*x14 - pz*x17) - x19*x21), x8*(-cx*x22 + x19*x22 + x23*x6), -x20*x26], [x8*(cy*x21 + fy*(py*x25 - pz*x24) - x21*x28), x8*(-cy*x22 + x22*x28 + x30*x6), x18*x29]]
+        j_lmk = [[x8*(-cx*x0 + x0*x19 + x1*x23), x8*(cx*x27 + fx*x17 - x19*x27), x8*(cx*x3 + fx*x14 - x19*x3)], [x8*(-cy*x0 + x0*x28 + x1*x30), x8*(cy*x27 + fy*x24 - x27*x28), x8*(cy*x3 + fy*x25 - x28*x3)]]
         return j_txn, j_rxn, j_lmk
 
+def project_axa(txn, rxn, lmk, K, np=np, jac=False):
+    # unroll
+    fx,fy,cx,cy = K[(0,1,0,1),(0,1,2,2)]
+    x,y,z=[txn[...,i] for i in range(3)]
+    R,P,Y=[rxn[...,i] for i in range(3)] # NOTE: not really Roll/Pitch/Yaw
+    px,py,pz=[lmk[...,i] for i in range(3)]
+    c0 = np.zeros_like(x)
+
+    x0=P**2
+    x1=R**2
+    x2=Y**2
+    x3=x0 + x1 + x2
+    x4=np.sqrt(x3)
+    x5=np.cos(x4)
+    x6=1./x3
+    x7=x5 - 1.0
+    x8=Y*pz
+    x9=P*py
+    x10=R*px
+    x11=x10 + x8 + x9
+    x12=x11*x6*x7
+    x13=P*px
+    x14=R*py
+    x15=x13 - x14
+    x16=np.sin(x4)
+    x17=x16/x4
+    x18=Y*x12 - pz*x5 + x15*x17 - z
+    x19=1./x18
+    x20=P*pz
+    x21=Y*py
+    x22=x20 - x21
+    x23=x19*(-cx*x18 + fx*(-R*x12 + px*x5 + x + x17*x22))
+    x24=R*pz
+    x25=R*x6
+    x26=x25*x9
+    x27=x1*x6
+    x28=x25*x8
+    x29=px*x27 - px + x26 + x28
+    x30=Y*x6*x7
+    x31=R*x5*x6
+    x32=x13*x25
+    x33=x11*x7/x3**2
+    x34=R*Y
+    x35=x3**(-3/2)
+    x36=x11*x16*x35
+    x37=x33*x34 + x34*x36
+    x38=-x15*x31 - x17*x24 + x17*(-py*x27 + py + x32) + x29*x30 + x37
+    x39=x16*x35
+    x40=R*x6*x7
+    x41=-x12
+    x42=P*x5*x6
+    x43=P*x6*x8
+    x44=x0*x6
+    x45=py*x44 - py + x32 + x43
+    x46=P*Y
+    x47=x33*x46 + x36*x46
+    x48=-x15*x42 - x17*x20 - x17*(-px*x44 + px + x26) + x30*x45 + x47
+    x49=Y*x6*x9
+    x50=P*R
+    x51=x33*x50 + x36*x50
+    x52=x2*x6
+    x53=Y*x5*x6
+    x54=Y*px
+    x55=x25*x54
+    x56=pz*x52 - pz + x49 + x55
+    x57=Y*x15*x39 - x15*x53 - x17*x8 + x2*x33 + x2*x36 + x30*x56 + x41
+    x58=P*x17
+    x59=Y*x40
+    x60=x58 + x59
+    x61=R*x17
+    x62=P*x6*x7
+    x63=Y*x62
+    x64=-x61 + x63
+    x65=Y*x17
+    x66=P*x40
+    x67=-x5
+    x68=x52*x7 + x67
+    x69=x24 - x54
+    x70=x19*(cy*x18 + fy*(P*x12 - py*x5 + x17*x69 - y))
+
+    if not jac:
+        point=[-x23, x70]
+        return point
+    else:
+        j_txn=[[-fx*x19, c0, -x19*(cx + x23)], [c0, -fy*x19, x19*(-cy + x70)]]
+        j_rxn=[[-x19*(cx*x38 + fx*(-R*x22*x39 + x1*x33 + x1*x36 - x10*x17 + x22*x31 + x29*x40 + x41) + x23*x38), -x19*(cx*x48 + fx*(-x13*x17 + x17*(-pz*x44 + pz + x49) + x22*x42 + x40*x45 + x51) + x23*x48), -x19*(cx*x57 + fx*(-x17*x54 - x17*(-py*x52 + py + x43) + x22*x53 + x37 + x40*x56) + x23*x57)], [x19*(-cy*x38 - fy*(-x14*x17 - x17*(-pz*x27 + pz + x55) + x29*x62 - x31*x69 + x51) + x38*x70), x19*(-cy*x48 - fy*(P*x39*x69 + x0*x33 + x0*x36 - x17*x9 + x41 - x42*x69 + x45*x62) + x48*x70), x19*(-cy*x57 - fy*(-x17*x21 + x17*(-px*x52 + px + x28) + x47 - x53*x69 + x56*x62) + x57*x70)]]
+        j_lmk=[[x19*(cx*x60 - fx*(-x27*x7 + x5) + x23*x60), x19*(cx*x64 + fx*(x65 + x66) + x23*x64), x19*(cx*x68 - fx*(x58 - x59) + x23*x68)], [x19*(cy*x60 - fy*(x65 - x66) - x60*x70), x19*(cy*x64 + fy*(x44*x7 + x67) - x64*x70), x19*(cy*x68 + fy*(x61 + x63) - x68*x70)]]
+
+        return j_txn, j_rxn, j_lmk
+
+
 def main():
+    #np.random.seed(1)
     K = np.float32([
         500, 0, 320,
         0, 500, 240,
         0, 0, 1
         ]).reshape(3,3)
 
-    txn = np.random.normal(size=(5,3))
-    rxn = np.random.normal(size=(5,3))
-    lmk = np.random.normal(size=(5,3))
+    txn = 0.1 * np.random.normal(size=(1,3))
+    rxn = 0.1 * np.random.normal(size=(1,3))
+    lmk = np.random.normal(size=(1,3))
     #lmk[..., 2] = np.abs(lmk[..., 2])
 
-    point, j_txn, j_rxn, j_lmk = project(txn,rxn,lmk,K)
-    
-    print 'j_txn', j_txn
-    # print 'j_rxn', j_rxn
+    point = project_axa(txn,rxn,lmk,K, jac=False)
+    j_txn, j_rxn, j_lmk = project_axa(txn,rxn,lmk,K, jac=True)
+
+    print 'point', np.float32(point).ravel()
+    print 'j_txn', np.float32(j_txn).transpose(2,0,1)
+    print 'j_rxn', np.float32(j_rxn).transpose(2,0,1)
+    #print 'j_lmk', np.float32(j_lmk).transpose(2,0,1)
 
     #print np.transpose(project(txn,rxn,lmk, K)[0])
-    rvec = [cv2.Rodrigues(tx.euler_matrix(*r)[:3,:3])[0] for r in rxn]
+    #rvec = [cv2.Rodrigues(tx.euler_matrix(*r)[:3,:3])[0] for r in rxn]
+    rvec = rxn
     tvec = txn
 
     #Tis = [tx.inverse_matrix(tx.compose_matrix(translate=t, angles=r)) for(t,r) in zip(txn, rxn)]
@@ -250,14 +343,16 @@ def main():
     #tvec = [T[:3,3:].ravel() for T in Tis]
 
     cv_res = [cv2.projectPoints((l[None,:]), r, t, K, None) for (l,r,t) in zip(lmk, rvec, tvec)]
+    cv_pt = np.float32([c[0] for c in cv_res])
     cv_j = np.float32([c[1] for c in cv_res])
 
     j_rxn = cv_j[:, :, 0:3]
     j_txn = cv_j[:, :, 3:6]
     j_cam = cv_j[:, :, 6:10]
 
-    print j_txn
-    # print j_rxn
+    print 'point', np.float32(cv_pt)
+    print 'j_txn', j_txn
+    print 'j_rxn', j_rxn
     # print j_cam
     #j_lmk 
 

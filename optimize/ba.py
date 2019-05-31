@@ -5,9 +5,10 @@ from scipy.sparse import lil_matrix, csr_matrix
 from cho_util import vmath as vm
 from autograd import jacobian
 from autograd import numpy as anp
-from expr import project, Projector
+from expr import project, project_axa, Projector
 
 from profilehooks import profile
+from rot import axa_to_q, q_to_axa, rpy_to_q, q_to_rpy
 
 class BundleAdjustment(object):
     # static dimensions
@@ -57,6 +58,8 @@ class BundleAdjustment(object):
         # automatic differentiation?
         #self.jacobian = jacobian(lambda x : self.residual(x, np=anp))
 
+
+
     def invert(self, txn, rxn):
         Ti = [vm.tx.inverse_matrix(vm.tx.compose_matrix(translate=t, angles=r)) for (t, r) in zip(txn, rxn)]
         txn, rxn = zip(*[( vm.tx.translation_from_matrix(T), vm.tx.euler_from_matrix(T) ) for T in Ti])
@@ -80,6 +83,18 @@ class BundleAdjustment(object):
         lmk = params[i2:i3].reshape(-1,3)
 
         return txn, rxn, lmk
+
+    @staticmethod
+    def parametrize(txn, rxn):
+        # RPY -> Rodrigues
+        rxn = q_to_axa(rpy_to_q(rxn))
+        return txn, rxn
+
+    @staticmethod
+    def unparametrize(txn, rxn):
+        # Rodrigues -> RPY
+        rxn = q_to_rpy(axa_to_q(rxn))
+        return txn, rxn
 
     def jacobian(self, params):
         txn, rxn, lmk = BundleAdjustment.unroll(params, self.n_src_, self.n_lmk_)
@@ -149,7 +164,8 @@ class BundleAdjustment(object):
         rxn = rxn[self.i_src_]
         lmk = lmk[self.i_lmk_]
         # project
-        res = project(txn,rxn,lmk,self.K_, np=np, jac=jac)
+        #res = project(txn,rxn,lmk,self.K_, np=np, jac=jac)
+        res = project_axa(txn,rxn,lmk,self.K_, np=np, jac=jac)
         #data = {}
         #res = Projector(txn,rxn,lmk,self.K_).compute(np=np, jac=jac, data=data)
         #print data.keys()
@@ -173,13 +189,12 @@ class BundleAdjustment(object):
 
         # parametrize
         txn, rxn = self.invert(txn, rxn) # pose -> transform
+        txn, rxn = self.parametrize(txn, rxn)
         x0 = self.roll(txn, rxn, lmk)
 
         res = least_squares(
                 self.residual, x0,
                 jac=self.jacobian,
-                #jac='2-point',
-                #jac_sparsity=A,
                 x_scale='jac',
                 **crit
                 )
@@ -188,6 +203,7 @@ class BundleAdjustment(object):
 
         # un-parametrize
         txn, rxn, lmk = self.unroll(res.x, self.n_src_, self.n_lmk_)
+        txn, rxn = self.unparametrize(txn, rxn)
         txn, rxn = self.invert(txn, rxn) # transform -> pose
 
         data['txn'] = txn

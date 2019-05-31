@@ -26,7 +26,8 @@ from dense_rec import DenseRec
 from optimize.ba import BundleAdjustment
 
 from profilehooks import profile
-from sklearn.neighbors import NearestNeighbors
+
+from util import *
 
 # use recorded configuration
 # avoid cluttering global namespace
@@ -71,96 +72,7 @@ class PipelineState(Enum):
     TRACK    = 3 # tracking!
     LOST     = 4 # lost and sad!
 
-def pose_to_xfm(pose):
-    txn = pose[L_POS]
-    rxn = pose[A_POS]
-    return tx.compose_matrix(
-            angles = rxn,
-            translate = txn)
 
-def index_remap(idx):
-    # source = (0, 0, 2, 2, 2)
-    # uniq   = (0, 2)
-    # alt_idx = (0, 1)
-    # i_s2a   = [0, X, 1]
-    # i_a2s   = [0, 1],
-
-    ibw, i_new = np.lib.arraysetops.unique(idx,
-            return_inverse=True
-            )
-    return np.arange(len(ibw)), ibw, i_new
-
-def get_transform(source_frame, target_frame):
-    if source_frame is None:
-        # assume source=map
-        xfm_s2m = np.eye(4)
-    else:
-        xfm_s2m = pose_to_xfm( source_frame['pose'] )
-
-    xfm_t2m = pose_to_xfm( target_frame['pose'] )
-    xfm_s2t = tx.inverse_matrix(xfm_t2m).dot(xfm_s2m)
-
-    R = xfm_s2t[:3, :3]
-    t = xfm_s2t[:3, 3:]
-    return R, t
-
-def transform_cloud(cloud, source_frame, target_frame):
-    R, t = get_transform(source_frame, target_frame)
-    return vm.rtx3(R, t.ravel(), cloud)
-
-def project_to_frame(cloud, source_frame, target_frame, K, D):
-    R, t = get_transform(source_frame, target_frame)
-
-    cloud = np.float64(cloud)
-    rvec = cv2.Rodrigues(R)[0].ravel()
-    tvec = np.float32(t).ravel()
-    res = cvu.project_points(cloud, rvec, tvec,
-            K, D)
-    return res
-
-def extract_color(img, pt):
-    h, w = img.shape[:2]
-    idx = vm.rint(pt)[..., ::-1] # (x,y) -> (i,j)
-    idx = np.clip(idx, (0,0), (h-1,w-1)) # TODO : fix this hack
-    col = img[idx[:,0], idx[:,1]]
-    # TODO : support sampling window (NxN) average
-    return col
-
-def non_max(pt, rsp,
-        k=16,
-        radius=4.0, # << NOTE : supply valid radius here when dealing with 2D Data
-        thresh=0.5
-        ):
-
-    # NOTE : somewhat confusing;
-    # here suffix c=camera, l=landmark.
-    # TODO : is it necessary / proper to take octaves into account?
-    if len(pt) < k:
-        # Not enough references to apply non-max with.
-        return np.arange(len(pt))
-
-    # compute nearest neighbors
-    neigh = NearestNeighbors(n_neighbors=k, radius=np.inf)
-    neigh.fit(pt)
-
-    # NOTE : 
-    # radius_neighbors would be nice, but indexing is difficult to use
-    # res = neigh.radius_neighbors(pt_new, return_distance=False)
-    d, i = neigh.kneighbors(return_distance=True)
-    print len(i)
-
-    # too far from other landmarks to apply non-max
-    msk_d = (d.min(axis=1) >= radius)
-    print('msk_d', msk_d.sum())
-    # passed non-max
-    msk_v = np.all(rsp[i] * thresh < rsp[:,None], axis=1) # 
-    print('msk_v', msk_v.sum())
-
-    # format + return results
-    msk = (msk_d | msk_v)
-    idx = np.where(msk)[0]
-    #print_ratio('non-max', len(idx), msk.size)
-    return idx
 
 class Pipeline(object):
     def __init__(self, cfg):
@@ -211,8 +123,8 @@ class Pipeline(object):
         dsc_fmt  = (self.extractor_.descriptorSize(), dsc_t)
         return DB(img_fmt=img_fmt, dsc_fmt=dsc_fmt)
 
-    def motion_model(self, f0, f1, use_kf=False):
-        if not use_kf:
+    def motion_model(self, f0, f1, use_kalman=False):
+        if not use_kalman:
             # simple `repetition` model
             txn0, rxn0 = f0['pose'][L_POS], f0['pose'][A_POS]
             txn1, rxn1 = f1['pose'][L_POS], f1['pose'][A_POS]
@@ -235,8 +147,8 @@ class Pipeline(object):
             return x, P
         else:
             # dt MUST NOT BE None
-            self.kf_.x = prv['pose']
-            self.kf_.P = prv['cov']
+            self.kf_.x = f0['pose']
+            self.kf_.P = f0['cov']
             dt = (f1['stamp'] - f0['stamp'])
             self.kf_.predict(dt)
             return self.kf_.x.copy(), self.kf_.P.copy()
@@ -264,7 +176,7 @@ class Pipeline(object):
             x, P = self.motion_model(
                     f0 = self.db_.frame_[-2],
                     f1 = self.db_.frame_[-1],
-                    use_kf = False)
+                    use_kalman = True)
         else:
             x = np.zeros(self.cfg_['state_size'])
             P = 1e-6 * np.eye(self.cfg_['state_size'])
@@ -470,7 +382,8 @@ class Pipeline(object):
         cld0_l = landmark['pos'][~landmark['track']]
         dsc_l  = landmark['dsc'][~landmark['track']]
 
-        if len(cld0_l) >= 16:
+        msk_prj = None
+        if len(cld0_l) >= 128:
             # merge with projections
             pt0_cld_l = project_to_frame(cld0_l,
                     source_frame=mapframe,
@@ -486,10 +399,11 @@ class Pipeline(object):
                 pt0_cld_l[..., 1] < self.cfg_['h'],
                 ])
 
+        if (msk_prj is not None) and msk_prj.sum() >= 16:
             mi0, mi1 = match_local(
                     pt0_cld_l[msk_prj], feat1.pt,
                     dsc_l[msk_prj], feat1.dsc,
-                    hamming = (not feat1.dsc[0].dtype == np.float32)
+                    hamming = (not feat1.dsc.dtype == np.float32)
                     )
 
             # collect all parts
@@ -548,7 +462,7 @@ class Pipeline(object):
         rvec0 = cv2.Rodrigues(T_i[:3,:3])[0]
         tvec0 = T_i[:3,3:]
 
-        if len(pt1) >= 512:
+        if len(pt1) >= 1024:
             # prune
             nmx_idx = non_max(
                     pt1,
@@ -565,11 +479,11 @@ class Pipeline(object):
                 useExtrinsicGuess=True,
                 rvec=rvec0,
                 tvec=tvec0,
-                iterationsCount=512,
+                iterationsCount=1024,
                 reprojectionError=2.0,
                 confidence=0.999,
-                flags=cv2.SOLVEPNP_EPNP
-                #flags=cv2.SOLVEPNP_ITERATIVE
+                #flags=cv2.SOLVEPNP_EPNP
+                flags=cv2.SOLVEPNP_ITERATIVE
                 #minInliersCount=0.5*_['pt0']
                 )
 
@@ -632,12 +546,13 @@ class Pipeline(object):
 
         need_kf = np.logical_or.reduce([
             not suc,  # PNP failed -- try new keyframe
-            #suc and (n_pnp_out < 256), # PNP was decent but would be better to have a new frame
+            suc and (n_pnp_out < 128), # PNP was decent but would be better to have a new frame
             (frame1['index'] - keyframe['index'] > 32) and (msk_t.sum() < 256) # = frame is somewhat stale
             ]) and self.is_keyframe(frame1)
 
         run_ba = (frame1['index'] % 16) == 0 # ?? better criteria for running BA?
         #run_ba = False
+        #run_ba = need_kf
 
         if run_ba:
             idx0, idx1 = max(keyframe['index'], frame1['index']-16), frame1['index']
@@ -645,7 +560,7 @@ class Pipeline(object):
             obs = self.db_.observation
             msk = np.logical_and(
                     idx0 <= obs['src_idx'],
-                    obs['src_idx'] < idx1)
+                    obs['src_idx'] <= idx1)
 
             # parse observation
             i_src = obs['src_idx'][msk]
@@ -675,6 +590,8 @@ class Pipeline(object):
                     txn, rxn, lmk, self.cfg_['K']).compute(data=data_ba)       # << data
 
             if suc:
+                # TODO : apply post-processing kalman filter?
+
                 #print('{}->{}'.format(txn, data_ba['txn']))
                 #print('{}->{}'.format(rxn, data_ba['rxn']))
                 txn = data_ba['txn']
@@ -748,13 +665,11 @@ class Pipeline(object):
             return self.track(img, stamp, data)
 
     def save(self, path):
-        # return self.db_.save(path)
         if not os.path.exists(path):
             os.makedirs(path)
         D_ = lambda p : os.path.join(path, p)
-        np.save(D_('pose.npy'), self.db_.frame['pose'])
-        np.save(D_('map_pos.npy'), self.db_.landmark['pos'])
-        np.save(D_('map_col.npy'), self.db_.landmark['col'])
+        np.save(D_('config.npy'), self.cfg_)
+        self.db_.save(path)
             
 def main():
     #src = './scan_20190212-233625.h264'
@@ -778,6 +693,11 @@ def main():
         img = cv2.resize(img, None, fx=CFG['scale'], fy=CFG['scale'])
         data = {}
         pl.process(img, stamp, data)
+        #try:
+        #    pl.process(img, stamp, data)
+        #except Exception as e:
+        #    print('Exception while processing: {}'.format(e))
+        #    break
         if 'viz' in data:
             cv2.imshow('viz', data['viz'])
         k = cv2.waitKey(1 if auto else 0)

@@ -1,16 +1,58 @@
 #!/usr/bin/env python2
 import numpy as np
 import sympy as sm
+from sympy import Q, AppliedPredicate
+from sympy.assumptions.assume import global_assumptions
+import sys
 
 def rotate(rxn, lmk):
     Rx = sm.rot_axis1(rxn[0]).T
-    print Rx
     Ry = sm.rot_axis2(rxn[1]).T
     Rz = sm.rot_axis3(rxn[2]).T
     return Rz*Ry*Rx*lmk
 
+def rotate_axa(rxn, lmk):
+    # axis-angle (rodrigues) rotation
+    global_assumptions.add(Q.real(rxn))
+    global_assumptions.add(Q.real(lmk))
+
+    v = lmk
+    hsq = (rxn.T * rxn)[0,0]
+    h = sm.sqrt(hsq)
+    u = rxn / h
+    c = sm.cos( h )
+    s = sm.sin( h )
+    d = sm.ones(1,3) * u.multiply_elementwise(v)
+    p1 = (v*c)
+    p2 = s * u.cross(v)
+    p3 = (1.-c)*(d[0,0])*u
+    s = p1+p2+p3
+    return s
+
+def test_conversions():
+    x,y,z = sm.symbols('x,y,z')
+    R,P,Y = RPY = sm.symbols('R,P,Y') # euler
+    rx,ry,rz = AXA = sm.symbols('rx,ry,rz') # rodrigues
+
+    M_xyz = sm.Matrix([x,y,z]).T
+    M_rpy = sm.Matrix([R,P,Y]).T
+    M_axa = sm.Matrix([rx,ry,rz]).T
+
+    v1 = rotate([R,P,Y], M_xyz.T)
+    v2 = rotate_axa(M_axa.T, M_xyz.T)
+    v1 = sm.simplify(v1)
+    v2 = sm.simplify(v2)
+
+    sol = sm.solve(v1-v2, [rx,ry,rz])
+    print sol
+    sys.exit(0)
+
+
+test_conversions()
+
 def project(txn, rxn, lmk, K):
-    pt3 = rotate(rxn, lmk) + txn
+    #pt3 = rotate(rxn, lmk) + txn
+    pt3 = rotate_axa(rxn, lmk) + txn
     fx,fy,cx,cy = np.array(K)[(0,1,0,1),(0,1,2,2)]
     pth = K * pt3
     return pth[0:2, 0] / pth[2, 0]
@@ -20,7 +62,7 @@ def project(txn, rxn, lmk, K):
     p0 = px_x
     px_x = pth[0,0] / pth[2,0]
     p1 = px_x
-    print sm.simplify(p1 - p0)
+    #print sm.simplify(p1 - p0)
     px_y = pth[1,0] / pth[2,0]
     return (sm.Matrix([px_x, px_y]))
 
@@ -42,10 +84,10 @@ def main():
     #        ksym[-1].append(sm.Symbol('K{}{}'.format(i,j)))
     K   = sm.Matrix(ksym)
     M_txn = sm.Matrix([txn]).T
+    M_rxn = sm.Matrix([rxn]).T
     M_lmk = sm.Matrix([lmk]).T
     #res = project(txn, rxn, M_lmk)
-    pt = project(M_txn, rxn, M_lmk, K)
-
+    pt = project(M_txn, M_rxn, M_lmk, K)
     #print 'return {}'.format(pt).replace('Matrix','').replace('sin','np.sin').replace('cos','np.cos')
 
     print '======='
@@ -53,16 +95,19 @@ def main():
     #sm.pprint(jac)
 
     agg = pt.row_join(jac)
-    sm.simplify(agg)
-    rdc1, cex1 = sm.cse(sm.simplify(agg), order='none')
+    ##sm.simplify(agg)
+    rdc1, cex1 = sm.cse(agg, order='none', optimizations='basic')
     for ex,v in rdc1:
-        print '{}={}'.format(ex,v)
+        s = '{}={}'.format(ex,v)
+        print s.replace('cos','np.cos').replace('sin','np.sin')
     cex1 = cex1[0]
 
-    print cex1[:, 0]
-    print cex1[:, 1:4]
-    print cex1[:, 4:7]
-    print cex1[:, 7:10]
+    names = 'point', 'j_txn', 'j_rxn', 'j_lmk'
+    exs   = [cex1[:,0], cex1[:, 1:4], cex1[:, 4:7], cex1[:, 7:10]]
+
+    for name, ex in zip(names, exs):
+        s = '{}={}'.format(name, ex)
+        print s.replace('Matrix', '')
 
 if __name__ == '__main__':
     main()
