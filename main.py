@@ -26,6 +26,7 @@ from dense_rec import DenseRec
 from optimize.ba import BundleAdjustment
 
 from profilehooks import profile
+from sklearn.neighbors import NearestNeighbors
 
 # use recorded configuration
 # avoid cluttering global namespace
@@ -124,6 +125,42 @@ def extract_color(img, pt):
     col = img[idx[:,0], idx[:,1]]
     # TODO : support sampling window (NxN) average
     return col
+
+def non_max(pt, rsp,
+        k=16,
+        radius=4.0, # << NOTE : supply valid radius here when dealing with 2D Data
+        thresh=0.5
+        ):
+
+    # NOTE : somewhat confusing;
+    # here suffix c=camera, l=landmark.
+    # TODO : is it necessary / proper to take octaves into account?
+    if len(pt) < k:
+        # Not enough references to apply non-max with.
+        return np.arange(len(pt))
+
+    # compute nearest neighbors
+    neigh = NearestNeighbors(n_neighbors=k, radius=np.inf)
+    neigh.fit(pt)
+
+    # NOTE : 
+    # radius_neighbors would be nice, but indexing is difficult to use
+    # res = neigh.radius_neighbors(pt_new, return_distance=False)
+    d, i = neigh.kneighbors(return_distance=True)
+    print len(i)
+
+    # too far from other landmarks to apply non-max
+    msk_d = (d.min(axis=1) >= radius)
+    print('msk_d', msk_d.sum())
+    # passed non-max
+    msk_v = np.all(rsp[i] * thresh < rsp[:,None], axis=1) # 
+    print('msk_v', msk_v.sum())
+
+    # format + return results
+    msk = (msk_d | msk_v)
+    idx = np.where(msk)[0]
+    #print_ratio('non-max', len(idx), msk.size)
+    return idx
 
 class Pipeline(object):
     def __init__(self, cfg):
@@ -312,6 +349,7 @@ class Pipeline(object):
                 index   = lmk_idx, # landmark index
                 src     = np.full(len(cld1), frame1['index']), # source index
                 dsc     = feat1.dsc[mi1][msk_cld], # landmark descriptor
+                rsp     = [feat1.kpt[i].response for i in np.arange(len(feat1.kpt))[mi1][msk_cld]],
                 pos     = cld1, # landmark position [[ map frame ]]
                 pt      = pt1m[msk_cld], # tracking point initialization
                 tri     = np.ones(len(cld1), dtype=np.bool),
@@ -439,30 +477,38 @@ class Pipeline(object):
                     target_frame=frame1,
                     K=self.cfg_['K'],
                     D=self.cfg_['D'])
+
+            # in-frame projection mask
+            msk_prj = np.logical_and.reduce([
+                0 <= pt0_cld_l[..., 0],
+                pt0_cld_l[..., 0] < self.cfg_['w'],
+                0 <= pt0_cld_l[..., 1],
+                pt0_cld_l[..., 1] < self.cfg_['h'],
+                ])
+
             mi0, mi1 = match_local(
-                    pt0_cld_l, feat1.pt,
-                    dsc_l, feat1.dsc,
+                    pt0_cld_l[msk_prj], feat1.pt,
+                    dsc_l[msk_prj], feat1.dsc,
                     hamming = (not feat1.dsc[0].dtype == np.float32)
                     )
 
             # collect all parts
-            pt0  = np.concatenate([pt0_l, pt0_cld_l[mi0]], axis=0)
+            pt0  = np.concatenate([pt0_l, pt0_cld_l[msk_prj][mi0]], axis=0)
             pt1  = np.concatenate([pt1_l, feat1.pt[mi1]], axis=0)
             cld0 = np.concatenate([
                 landmark['pos'][landmark['track']],
-                landmark['pos'][~landmark['track']][mi0]
+                landmark['pos'][~landmark['track']][msk_prj][mi0]
                 ], axis=0)
 
             obs_lmk_idx = np.concatenate([
                 landmark['index'][landmark['track']],
-                landmark['index'][~landmark['track']][mi0]
+                landmark['index'][~landmark['track']][msk_prj][mi0]
                 ], axis=0)
         else:
             # only use tracked points
             pt0  = pt0_l
             pt1  = pt1_l
             cld0 = landmark['pos'][landmark['track']]
-
             obs_lmk_idx = landmark['index'][landmark['track']]
 
         
@@ -502,22 +548,38 @@ class Pipeline(object):
         rvec0 = cv2.Rodrigues(T_i[:3,:3])[0]
         tvec0 = T_i[:3,3:]
 
+        if len(pt1) >= 512:
+            # prune
+            nmx_idx = non_max(
+                    pt1,
+                    landmark['rsp'][obs_lmk_idx]
+                    )
+            print_ratio(len(nmx_idx), len(pt1), name='non_max')
+            cld_pnp, pt1_pnp = cld0[nmx_idx], pt1[nmx_idx]
+        else:
+            cld_pnp, pt1_pnp = cld0, pt1
+
         suc, rvec, tvec, inl = cv2.solvePnPRansac(
-                cld0[:,None], pt1[:,None],
+                cld_pnp[:,None], pt1_pnp[:,None],
                 self.cfg_['K'], self.cfg_['D'],
                 useExtrinsicGuess=True,
                 rvec=rvec0,
                 tvec=tvec0,
-                iterationsCount=65535,
+                iterationsCount=512,
                 reprojectionError=2.0,
                 confidence=0.999,
-                flags=cv2.SOLVEPNP_ITERATIVE
+                flags=cv2.SOLVEPNP_EPNP
+                #flags=cv2.SOLVEPNP_ITERATIVE
                 #minInliersCount=0.5*_['pt0']
                 )
-        suc = (suc and (inl is not None) and (len(inl) >= 0.25 * len(pt1)))
-        #print('pnp success : {}'.format(suc))
+
+        n_pnp_in  = len(cld_pnp)
+        n_pnp_out = len(inl) if (inl is not None) else 0
+
+        suc = (suc and (inl is not None) and (n_pnp_out >= 128 or n_pnp_out >= 0.25 * n_pnp_in))
+        print('pnp success : {}'.format(suc))
         if inl is not None:
-            print_ratio(len(inl), len(cld0), name='pnp')
+            print_ratio(n_pnp_out, n_pnp_in, name='pnp')
 
         # visualize match statistics
         viz_pt0 = project_to_frame(cld0,
@@ -570,14 +632,16 @@ class Pipeline(object):
 
         need_kf = np.logical_or.reduce([
             not suc,  # PNP failed -- try new keyframe
-            suc and (len(inl) < 256), # PNP was decent but would be better to have a new frame
+            #suc and (n_pnp_out < 256), # PNP was decent but would be better to have a new frame
             (frame1['index'] - keyframe['index'] > 32) and (msk_t.sum() < 256) # = frame is somewhat stale
             ]) and self.is_keyframe(frame1)
 
-        run_ba  = (frame1['index'] % 16) == 0 # ?? better criteria for running BA?
+        run_ba = (frame1['index'] % 16) == 0 # ?? better criteria for running BA?
+        #run_ba = False
 
         if run_ba:
-            idx0, idx1 = keyframe['index'], frame1['index']
+            idx0, idx1 = max(keyframe['index'], frame1['index']-16), frame1['index']
+            #idx0, idx1 = keyframe['index'], frame1['index']
             obs = self.db_.observation
             msk = np.logical_and(
                     idx0 <= obs['src_idx'],
@@ -658,6 +722,7 @@ class Pipeline(object):
                             index   = lmk_idx0 + np.arange(len(cld)), # landmark index
                             src     = np.full(len(cld), frame1['index']), # source index
                             dsc     = feat1.dsc[mi1][msk_cld], # landmark descriptor
+                            rsp     = [feat1.kpt[i].response for i in np.arange(len(feat1.kpt))[mi1][msk_cld]], # response "strength"
                             pos     = cld, # landmark position [[ map frame ]]
                             pt      = feat1.pt[mi1][msk_cld], # tracking point initialization
                             tri     = np.ones(len(cld), dtype=np.bool),
@@ -695,7 +760,7 @@ def main():
     #src = './scan_20190212-233625.h264'
     #reader = CVCameraReader(src, K=CFG['K'])
     root = '/media/ssd/datasets/ADVIO'
-    reader = AdvioReader(root, idx=2)
+    reader = AdvioReader(root, idx=6)
     # update configuration based on input
     cfg = dict(CFG)
     cfg['K'] = reader.meta_['K']

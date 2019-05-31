@@ -17,7 +17,7 @@ def draw_pose(ax, p, a, s=0.01, style='-'):
     ax.plot([o[0],o[0]+s*uy[0]], [o[1],o[1]+s*uy[1]], [o[2],o[2]+s*uy[2]], 'g'+style)
     ax.plot([o[0],o[0]+s*uz[0]], [o[1],o[1]+s*uz[1]], [o[2],o[2]+s*uz[2]], 'b'+style)
 
-pose = np.load('/tmp/db/pose.npy')[:-100]
+pose = np.load('/tmp/db/pose.npy')
 print pose.shape
 
 xyz = pose[:, 0:3]

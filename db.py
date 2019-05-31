@@ -56,6 +56,7 @@ class DB(object):
             ('index' , np.int32   , 1     ) ,
             ('src'   , np.int32   , 1     ) ,
             ('dsc'   , dsc_t      , dsc_s ) ,
+            ('rsp'   , np.float32 , 1     ) ,
             ('pos'   , np.float32 , 3     ) ,
             ('pt'    , np.float32 , 2     ) ,
             ('tri'   , np.bool    , 1     ) ,

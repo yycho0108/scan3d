@@ -118,7 +118,6 @@ class BundleAdjustment(object):
         c_i = np.concatenate(c_i)
         v   = np.concatenate(v)
         res = csr_matrix((v, (r_i, c_i)), shape=(n_out, n_in))
-        print ('jacsum', res.sum())
 
         # print('res', res.todense())
         # res1 = res.todense()
