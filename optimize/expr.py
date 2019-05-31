@@ -5,7 +5,7 @@ import cv2
 from cho_util import vmath as vm
 from tf import transformations as tx
 
-def project(txn, rxn, lmk, K, np=np):
+def project(txn, rxn, lmk, K, np=np, jac=False):
     # unroll
     fx,fy,cx,cy = K[(0,1,0,1),(0,1,2,2)]
     x,y,z=[txn[...,i] for i in range(3)]
@@ -58,12 +58,13 @@ def project(txn, rxn, lmk, K, np=np):
     x42=fy*x8
     x43=x22*x41
     x44=cy*x2
-
     point = ([x20*x8, x41*x8])
+    if (not jac):
+        return point
+
     j_txn = ([[x21, c0, cx*x8 - x23], [c0, x42, cy*x8 - x43]])
     j_rxn = ([[x23*x27 + x8*(cx*x28 + fx*(py*x14 + pz*(x15 - x17))), x23*x31 + x8*(cx*x34 + fx*(-x1*x9 + x13*x33 + x16*x32)), x21*(py*x37 + pz*(x16 - x38) - x35)], [x27*x43 + x8*(cy*x28 + fy*(py*x40 + pz*x37)), x31*x43 + x8*(cy*x34 + fy*(-x1*x11 + x12*x32 + x15*x33)), x19*x42]])
     j_lmk = ([[x0*x23 + x8*(-cx*x0 + fx*x2*x9), -x23*x6 + x8*(cx*x6 + fx*x18), -x23*x25 + x8*(cx*x25 + fx*x14)], [x0*x43 + x8*(-cy*x0 + fy*x11*x2), -x43*x6 + x8*(fy*x39 + x44*x5), -x25*x43 + x8*(fy*x40 + x3*x44)]])
-
     return point, j_txn, j_rxn, j_lmk
 
 def main():

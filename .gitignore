@@ -176,3 +176,4 @@ tags
 
 # End of https://www.gitignore.io/api/git,vim,linux,python
 *.h264
+*.prof
