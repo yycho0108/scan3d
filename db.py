@@ -121,10 +121,11 @@ class DB(object):
 
     def load(self, path):
         D_ = lambda p : os.path.join(path, p)
-
+        print('Please wait while loading DB ...')
         self.frame_       = np.load(D_('frame.npy'))
         self.landmark_    = np.load(D_('landmark.npy'))
         self.observation_ = np.load(D_('observation.npy'))
+        print('DB Load Complete!')
 
     def save(self, path):
         if not os.path.exists(path):

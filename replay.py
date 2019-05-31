@@ -140,7 +140,6 @@ def draw_pose(ax, p, a, s=0.1, style='-', alpha=1.0):
 @profile
 def main():
     db = DB(path='/tmp/db')
-    db.load('/tmp/db')
     cfg = np.load('/tmp/db/config.npy').item()
     pose = db.frame['pose']
     xyz  = pose[:, 0:3]
