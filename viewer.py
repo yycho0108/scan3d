@@ -16,11 +16,21 @@ class Viewer(object):
         self.win_, self.panels_ = self.build_win()
 
     def on_frame(self, frame, db):
-        print('frame index : {}'.format(frame['index']))
+        #print('frame index : {}'.format(frame['index']))
+        self.win_.setWindowTitle('Frame {:04d}'.format(frame['index']) )
 
         # draw_image()
         image = frame['image'].swapaxes(0,1)[..., ::-1] 
         self.panels_['img'].setImage(image)
+
+        self.panels_['kpt'].setData(
+                pos = frame['feat'].pt)
+
+        pt_obs = db.observation['point'][
+                (db.observation['src_idx'] ==  frame['index'])
+                ]
+        self.panels_['obs_pt'].setData(
+                pos = pt_obs)
 
         # draw_cloud()
         pos = db.landmark['pos']
@@ -49,6 +59,19 @@ class Viewer(object):
         img = pg.ImageItem()
         imvw.addItem(img)
         panels['img'] = img
+
+        # (frame) detected keypoints
+        sp = pg.ScatterPlotItem()
+        sp.setBrush(QtGui.QBrush( QtGui.QColor(255,0,0)))
+        imvw.addItem(sp)
+        panels['kpt'] = sp
+
+        # observed keypoints
+        sp = pg.ScatterPlotItem()
+        sp.setBrush(QtGui.QBrush( QtGui.QColor(0,0,255)))
+        imvw.addItem(sp)
+        panels['obs_pt'] = sp
+
 
         # cloud 3d view
         glvw = gl.GLViewWidget()
