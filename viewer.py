@@ -10,6 +10,10 @@ from db import L_POS, L_VEL, L_ACC, A_POS, A_VEL
 from optimize.rot import rpy_to_axa
 from cho_util import vmath as vm
 
+np.random.seed( 3 )
+from GLViewWidget import GLViewWidget
+#GLViewWidget = gl.GLViewWidget
+
 class Viewer(object):
     def __init__(self):
         self.app_ = QtGui.QApplication(sys.argv)
@@ -72,12 +76,14 @@ class Viewer(object):
         imvw.addItem(sp)
         panels['obs_pt'] = sp
 
-
         # cloud 3d view
-        glvw = gl.GLViewWidget()
+        glvw = GLViewWidget()
+        #glvw = GLViewWidget0()
+        #glvw.orbit(0, 90)
         sp_cld = gl.GLScatterPlotItem()
         glvw.addItem(sp_cld)
         panels['cld'] = sp_cld
+        glvw.setCameraPosition(rotation=QtGui.QQuaternion.fromEulerAngles(90,0,90).conjugated())
 
         # map origin
         gx = gl.GLAxisItem()
@@ -91,6 +97,8 @@ class Viewer(object):
 
         # (grid)
         gx = gl.GLGridItem()
+        gx.rotate(90, 0, 0, 1)
+        gx.rotate(90, 1, 0, 0)
         glvw.addItem(gx)
 
         # finalize layout?
