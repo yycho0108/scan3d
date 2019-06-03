@@ -130,6 +130,13 @@ class AdvioReader(object):
         self.pos_ += 1
         return suc, self.pos_, stamp, img
 
+    def read_all(self):
+        while True:
+            res = self.read()
+            if not res[0]:
+                break
+            yield res[1:]
+
     def set_pos(self, pos):
         self.pos_ = pos
         self.cap_.set( cv2.CAP_PROP_POS_FRAMES, pos)
@@ -137,10 +144,8 @@ class AdvioReader(object):
 def main():
     root = '/media/ssd/datasets/ADVIO'
     reader = AdvioReader(root)
-    while True:
-        suc, idx, stamp, img = reader.read()
-        if not suc:
-            break
+    for res in reader.read_all():
+        idx, stamp, img = res
         cv2.imshow('img', img)
         #print('stamp : {}'.format(stamp))
         k = cv2.waitKey(1)

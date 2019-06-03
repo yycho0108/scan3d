@@ -21,6 +21,11 @@ class NDRecord(object):
     def __len__(self):
         return self.size_
 
+    def reset(self, delete=True):
+        self.size_ = 0
+        if delete:
+            self.resize(self.cap_)
+
     def resize(self, new_cap):
         self.cap_ = int(new_cap)
         #self.data_ = np.resize(self.data_, self.cap_)

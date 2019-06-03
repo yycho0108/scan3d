@@ -65,6 +65,13 @@ class DB(object):
         if np.any([e is None for e in data]):
             print('Not enough information : DB Initialization will be delayed.')
 
+    def reset(self):
+        recs = [self.frame_, self.landmark_, self.observation_]
+        for rec in recs:
+            if rec is None:
+                continue
+            rec.reset()
+
     def build_frame(self, img_fmt):
         img_s, img_t = img_fmt
         return NDRecord([

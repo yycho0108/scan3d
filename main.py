@@ -30,6 +30,8 @@ from profilehooks import profile
 from util import *
 from optimize.rot import axa_to_q, q_to_axa, rpy_to_q, q_to_rpy
 
+from local_map import MapInitializer
+
 # use recorded configuration
 # avoid cluttering global namespace
 def _CFG_K():
@@ -68,16 +70,16 @@ CFG = dict(
 from enum import Enum
 class PipelineState(Enum):
     IDLE     = 0 # default state: do nothing
-    NEED_REF = 1 # need reference frame
-    NEED_MAP = 2 # need triangulated map
+    INIT     = 1 # need map initialization
     TRACK    = 3 # tracking!
     LOST     = 4 # lost and sad!
-
-
 
 class Pipeline(object):
     def __init__(self, cfg):
         self.cfg_       = self.build_cfg(cfg)
+        self.detector_  = cv2.FastFeatureDetector_create(
+                threshold=19,
+                nonmaxSuppression=True)
         self.extractor_ = cv2.ORB_create(2048, edgeThreshold=19)
         #self.extractor_ = cv2.xfeatures2d.SURF_create()
         self.matcher_   = Matcher(ex=self.extractor_)
@@ -85,6 +87,9 @@ class Pipeline(object):
         self.kf_        = build_ekf()
         self.db_        = self.build_db()
         self.state_     = PipelineState.NEED_REF
+
+        # higher-level handles?
+        self.initializer_ = MapInitializer()
 
     def build_cfg(self, cfg):
         # build derived values
@@ -164,13 +169,18 @@ class Pipeline(object):
     def build_frame(self, img, stamp):
         """ build a simple frame """
         # automatic index assignment
+        # NOTE: multiple frames will have the same index
+        # if not appended to self.db_.frame
+        # TODO : separate out feature processing parts?
         index = self.db_.frame.size
 
         # by default, not a keyframe
         is_kf = False
 
         # extract features
-        kpt, dsc = self.extractor_.detectAndCompute(img, None)
+        kpt = self.detector_.detect(img)
+        kpt, dsc = self.extractor_.compute(img, kpt)
+        # kpt, dsc = self.extractor_.detectAndCompute(img, None)
         feat = Feature(kpt, dsc, cv2.KeyPoint.convert(kpt))
 
         # apply motion model? initialize pose anyway
@@ -677,7 +687,7 @@ class Pipeline(object):
                     self.db_.frame[-1]['is_kf'] = True
 
                     lmk_idx0 = self.db_.landmark.size
-                    print 'lmk_idx0', lmk_idx0
+                    print('lmk_idx0', lmk_idx0)
                     msk_cld = data_tv['msk_cld']
                     cld1 = data_tv['cld1'][msk_cld] * (scale_ref / scale_tv)
                     cld = transform_cloud(cld1,

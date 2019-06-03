@@ -55,8 +55,8 @@ class BundleAdjustment(object):
         self.K_ = K
 
         # derived data
-        self.n_src_ = 1+np.max(i_src)
-        self.n_lmk_ = 1+np.max(i_lmk)
+        self.n_src_ = 1+np.max(i_src, initial=-1)
+        self.n_lmk_ = 1+np.max(i_lmk, initial=-1)
         self.n_obs_ = len(self.p_obs_)
 
         # simple checks
@@ -202,6 +202,12 @@ class BundleAdjustment(object):
 
     #@profile
     def compute(self, crit={}, data={}):
+        if (self.n_src_ <= 0) or (self.n_lmk_ <= 0):
+            # unable to perform BA on empty data
+            data['txn'] = self.txn_
+            data['rxn'] = self.rxn_
+            data['lmk'] = self.lmk_
+            return False
         # criteria (local copy)
         tmp = self.crit_.copy()
         tmp.update(crit)
