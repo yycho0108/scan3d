@@ -1,5 +1,6 @@
 #!/usr/bin/env python2
 import numpy as np
+import pdb
 
 class NDRecord(object):
     """
@@ -27,11 +28,18 @@ class NDRecord(object):
             self.resize(self.cap_)
 
     def resize(self, new_cap):
-        self.cap_ = int(new_cap)
+        if new_cap < self.cap_:
+            self.size_ = min(self.size_, new_cap)
+            return
+
+        # handle `expansion` case
         #self.data_ = np.resize(self.data_, self.cap_)
+        self.cap_ = int(new_cap)
         data = self.data_
         self.data_ = np.empty(shape=self.cap_, dtype=self.dtype_)
-        self.data_[:self.size_] = data[:self.size_]
+        n_keep = min(self.size_, new_cap)
+        self.data_[:n_keep] = data[:n_keep]
+        self.size_ = n_keep
 
         #for k in self.dtype_.names:
         #    setattr(self, k, self.data_[k])
@@ -41,15 +49,18 @@ class NDRecord(object):
             self.resize(2*self.cap_)
         self.data_[self.size_] = rec
         self.size_ += 1
-
+    def __getslice__(self, start, stop) :
+        return self.__getitem__(slice(start, stop))
     def __getitem__(self, *args, **kwargs):
+        #pdb.set_trace()
         return self.data.__getitem__(*args, **kwargs)
+        #return self.data.__getitem__(*args, **kwargs)
     def __setitem__(self, *args, **kwargs):
         return self.data.__setitem__(*args, **kwargs)
 
     def extend(self, recs):
         if (self.size_ + len(recs)) >= self.cap_:
-            self.resize(2*self.cap_)
+            self.resize(max(2*self.cap_, self.size_+len(recs)))
             return self.extend(recs)
         else:
             self.data_[self.size_:self.size_+len(recs)] = recs

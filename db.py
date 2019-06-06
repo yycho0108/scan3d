@@ -145,6 +145,65 @@ class DB(object):
         #np.save(D_('map_pos.npy'), self.landmark['pos'])
         #np.save(D_('map_col.npy'), self.landmark['col'])
 
+    def prune(self, src_idx=None, lmk_idx=None, obs_idx=None):
+        # compute masks
+        if src_idx is not None:
+            msk_src = np.in1d(self.observation_['src_idx'], src_idx)
+        else:
+            # keep all
+            msk_src = np.ones(self.observation_.size, dtype=np.bool)
+
+        if lmk_idx is not None:
+            msk_lmk = np.in1d(self.observation_['lmk_idx'], lmk_idx)
+        else:
+            # keep all
+            msk_lmk = np.ones(self.observation_.size, dtype=np.bool)
+
+        if obs_idx is not None:
+            msk_obs = np.zeros(self.observation_.size, dtype=np.bool)
+            msk_obs[obs_idx] = True
+        else:
+            # keep all
+            msk_obs = np.ones(self.observation_.size, dtype=np.bool)
+
+        #print msk_src.shape
+        #print msk_lmk.shape
+        #print msk_obs.shape
+
+        msk = np.logical_and.reduce([
+            msk_src, msk_lmk, msk_obs
+            ])
+        n_obs = msk.sum()
+        self.observation_[:n_obs] = self.observation[msk]
+        self.observation_.resize(n_obs)
+
+        # == handle source ==
+        #print 'sort-check[src]', np.all( np.diff(self.observation['src_idx']) >= 0 )
+        idx_src = np.unique(self.observation['src_idx'])
+        n_src = len(idx_src)
+        self.frame_[:n_src] = self.frame[idx_src]
+        self.frame_.resize(n_src)
+        # remap_indices()
+        map_src = np.empty(shape=(1 + self.frame['index'].max()), dtype=np.int32)
+        map_src[idx_src] = np.arange(n_src)
+        self.observation_['src_idx'] = map_src[self.observation_['src_idx']]
+        self.frame['index'] = np.arange(n_src)
+
+        # == handle landmark ==
+        #print 'sort-check', np.all( np.diff(self.landmark['index']) >= 0 )
+        #print self.landmark['index'][0]
+        idx_lmk = np.unique(self.observation['lmk_idx'])
+        n_lmk   = len(idx_lmk)
+        print 'pre', self.landmark[idx_lmk][:5]
+        self.landmark_[:n_lmk] = self.landmark[idx_lmk].copy()
+        print 'post', self.landmark[:5]
+        self.landmark_.resize(n_lmk)
+        # remap_indices()
+        map_lmk = np.empty(shape=(1 + self.landmark['index'].max()), dtype=np.int32)
+        map_lmk[idx_lmk] = np.arange(n_lmk)
+        self.observation_['lmk_idx'] = map_lmk[self.observation_['lmk_idx']]
+        self.landmark['index'] = np.arange(n_lmk)
+
 def main():
     ex = cv2.ORB_create()
     img_t = np.uint8

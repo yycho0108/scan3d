@@ -86,10 +86,15 @@ class Pipeline(object):
         self.tracker_   = Tracker(pLK=cfg['pLK'])
         self.kf_        = build_ekf()
         self.db_        = self.build_db()
-        self.state_     = PipelineState.NEED_REF
+        self.state_     = PipelineState.INIT
 
         # higher-level handles?
-        self.initializer_ = MapInitializer()
+        self.initializer_ = MapInitializer(
+                db = self.build_db(),
+                matcher = self.matcher_,
+                tracker = self.tracker_,
+                cfg = self.cfg_
+                )
 
     def build_cfg(self, cfg):
         # build derived values
@@ -130,7 +135,7 @@ class Pipeline(object):
         dsc_fmt  = (self.extractor_.descriptorSize(), dsc_t)
         return DB(img_fmt=img_fmt, dsc_fmt=dsc_fmt)
 
-    def motion_model(self, f0, f1, use_kalman=False):
+    def motion_model(self, f0, f1, stamp, use_kalman=False):
         if not use_kalman:
             # simple `repetition` model
             txn0, rxn0 = f0['pose'][L_POS], f0['pose'][A_POS]
@@ -157,6 +162,12 @@ class Pipeline(object):
             self.kf_.x = f0['pose']
             self.kf_.P = f0['cov']
             dt = (f1['stamp'] - f0['stamp'])
+            self.kf_.predict(dt)
+
+            txn, rxn = f1['pose'][L_POS], f1['pose'][A_POS]
+            z = np.concatenate([txn, rxn])
+            self.kf_.update(z)
+            dt = (stamp - f1['stamp'])
             self.kf_.predict(dt)
             return self.kf_.x.copy(), self.kf_.P.copy()
 
@@ -185,9 +196,11 @@ class Pipeline(object):
 
         # apply motion model? initialize pose anyway
         if self.db_.frame_.size >= 2:
+            print('motion-model')
             x, P = self.motion_model(
                     f0 = self.db_.frame_[-2],
                     f1 = self.db_.frame_[-1],
+                    stamp=stamp,
                     use_kalman = True)
         else:
             x = np.zeros(self.cfg_['state_size'])
@@ -202,134 +215,39 @@ class Pipeline(object):
             self.state_, new_state))
         self.state_ = new_state
 
-    def init_ref(self, img, stamp, data):
-        """ initialize reference """
-        frame = self.build_frame(img, stamp)
-        if not self.is_keyframe(frame):
-            # if not keyframe-worthy, continue trying initialization
-            return
-        frame['is_kf'] = True
-        self.db_.frame.append( frame )
-        self.db_.state_['track'] = (frame['feat']).item().pt
-        self.transition( PipelineState.NEED_MAP )
-
     def init_map(self, img, stamp, data):
         """ initialize map """
         # fetch prv+cur frames
         # populate frame from motion model
-        frame0 = self.db_.keyframe[-1] # last **keyframe**
-        #frame0 = self.db_.frame[-2]
-        # TODO : restore dt maybe
-        frame1 = self.build_frame(img, stamp)
-        #frame1 = self.db_.frame[-1]
-
-        print('target pair : {:.2f}-{:.2f}'.format(
-            frame0['stamp'],
-            frame1['stamp']))
-
-        # process ...
-        img0, img1   = frame0['image'], frame1['image']
-        feat0, feat1 = frame0['feat'],  frame1['feat'].item()
-
-        # bookkeeping: track reference points
-        # if tracking is `completely` lost then new keyframe is desired.
-        pt1_l, msk_t = self.tracker_.track(
-                img0, img1, self.db_.state['track'], return_msk=True)
-        self.db_.state['track'] = pt1_l[msk_t]
-        print('tracking state : {}'.format( len(self.db_.state['track'])))
-
-        # match
-        mi0, mi1 = self.matcher_.match(
-                feat0.dsc, feat1.dsc,
-                lowe=0.8, fold=False
-                ) # harsh lowe to avoid pattern collision
-        pt0m = feat0.pt[mi0]
-        pt1m = feat1.pt[mi1]
-        
-        suc, det = TwoView(pt0m, pt1m, self.cfg_['K']).compute(data=data)
-        print(data['dbg-tv'])
+        frame = self.build_frame(img, stamp)
+        suc = self.initializer_.compute(frame, data)
+        #print(data['dbg-tv'])
         if not suc:
-            data['viz'] = draw_matches(img0, img1, pt0m, pt1m)
-            # unsuccessful frame-to-frame reconstruction
-            if not len(self.db_.state['track']) >= 128:
-                # condition: `tracking lost`
-                # BEFORE sufficient parallax was observed.
-                # need to reset the reference frame.
-                #print('\t -- reset keyframe')
-                # reset keyframe
-                #frame1['is_kf'] = True
-                self.transition( PipelineState.NEED_REF )
-                pass
             return
-        
-        # here, init successful
-        msk_cld = data['msk_cld']
-        cld1 = data['cld1'][msk_cld]
-        # IMPORTANT : everything references **frame1** !!
-        # (so frame0 geometric information is effectively ignored.)
 
-        col = extract_color(img1, pt1m[msk_cld])
-        lmk_idx0 = self.db_.landmark.size
-        lmk_idx  = lmk_idx0 + np.arange(len(cld1))
-        local_map = dict(
-                index   = lmk_idx, # landmark index
-                src     = np.full(len(cld1), frame1['index']), # source index
-                dsc     = feat1.dsc[mi1][msk_cld], # landmark descriptor
-                rsp     = [feat1.kpt[i].response for i in np.arange(len(feat1.kpt))[mi1][msk_cld]],
-                pos     = cld1, # landmark position [[ map frame ]]
-                pt      = pt1m[msk_cld], # tracking point initialization
-                tri     = np.ones(len(cld1), dtype=np.bool),
-                col     = col, # debug : point color information
-                track   = np.ones(len(cld1), dtype=np.bool) # tracking status
-                )
-        self.db_.landmark.extend(zip(*[
-            local_map[k] for k in self.db_.landmark.dtype.names]
-            ))
-        self.db_.observation.extend(zip(*[
-                    np.full_like(lmk_idx, frame1['index']), # observation frame source
-                    lmk_idx, # landmark index
-                    pt1m[msk_cld]
-                    ]))
+        n_src = self.initializer_.db_.frame_.size
+        n_lmk = self.initializer_.db_.landmark_.size
+        n_obs = self.initializer_.db_.observation_.size
 
-        # unroll reconstruct information
-        R   = data['R']
-        t   = data['t']
-        msk = data['msk_cld']
+        #self.db_.frame_.resize(0)
+        self.db_.frame_.extend(self.initializer_.db_.frame_[:n_src])
+        #self.db_.landmark_.resize(0)
+        self.db_.landmark_.extend(self.initializer_.db_.landmark_[:n_lmk])
+        #self.db_.observation_.resize(0)
+        self.db_.observation_.extend(self.initializer_.db_.observation_[:n_obs])
+        self.transition( PipelineState.TRACK)
 
-        #print( 'Rpriori', tx.euler_from_matrix(R))
-        #R, t = vm.Rti(R, t)
-        frame1['pose'][L_POS] = t.ravel()
-        frame1['pose'][A_POS] = tx.euler_from_matrix(R)
-        #x, P = self.motion_model(
-        #            f0 = self.db_.frame_[-2],
-        #            f1 = frame1,
-        #            use_kf = False, dt=dt)
-        self.nxt_ = frame1['pose'].copy(), frame1['cov'].copy() # TODO : get rid of this hack
+        #print self.db_.landmark_['pos'][self.db_.landmark_['tri']][:5]
+        #print self.initializer_.db_.landmark_['pos'][self.db_.landmark_['tri']][:5]
 
-        # TODO : danger : if init_map() is NOT created from zero position, need to account for that
-        # update frame data
-        #[0pos,3vel,6acc,9rpos,12rvel]
-        frame1['pose'][L_POS] = 0.0 # t.reshape(-1)
-        frame1['pose'][L_VEL] = 0.0 # reserve judgement about vel here.
-        frame1['pose'][L_ACC] = 0.0 # reserve judgement about acc here.
-        frame1['pose'][A_POS] = 0.0 # tx.euler_from_matrix(R) # TODO : apply proper R?
-        frame1['pose'][A_VEL] = 0.0 # reserve judgement about rvel here.
-        frame1['is_kf'] = True # successful initialization, frame1 considered keyframe
-        self.db_.frame.append( frame1 )
-
-        # YAY! Able to start tracking the landmarks.
-        # state transition ...
-        self.transition( PipelineState.TRACK )
-
-        # update output debug data
-        data['img1'] = img1
-        data['pt1m'] = pt1m
-
-        # by default, ALL visualizations MUST come
-        # at the end of each processing function.
         if True:
-            # == if cfg['dbg']:
-            print('R', tx.euler_from_matrix(R))
+            frame0 = self.db_.frame_[0]
+            frame1 = self.db_.frame_[1]
+            img0, img1 = frame0['image'], frame1['image']
+            feat0, feat1 = frame0['feat'], frame1['feat']
+            pt0m, pt1m = feat0.pt[data['mi0']], feat1.pt[data['mi1']]
+            msk = data['msk_cld']
+
             print('frame pair : {}-{}'.format(
                 frame0['index'],
                 frame1['index']))
@@ -337,12 +255,10 @@ class Pipeline(object):
             viz0 = cv2.drawKeypoints(img0, feat0.kpt, None)
             viz1 = cv2.drawKeypoints(img1, feat1.kpt, None)
             viz  = draw_matches(viz0, viz1, pt0m[msk], pt1m[msk])
-            cv2.imshow('viz', viz)
             data['viz'] = viz
 
             # == if cfg['dbg-cloud']:
             dr_data = {}
-            print(self.cfg_['K'])
             cld_viz, col_viz = DenseRec(self.cfg_['K']).compute(
                     img0, img1,
                     P1=data['P0'],
@@ -351,7 +267,8 @@ class Pipeline(object):
             cdist = vm.norm(cld_viz)
             data['cld_viz'] = cld_viz[cdist < np.percentile(cdist, 95)]
             data['col_viz'] = col_viz[cdist < np.percentile(cdist, 95)]
-            # cv2.imshow('flow', dr_data['viz'])
+        self.initializer_.reset()
+        return
 
     def bundle_adjust(self, frame0, frame1):
         idx0, idx1 = max(frame0['index'], frame1['index']-8), frame1['index']
@@ -419,14 +336,6 @@ class Pipeline(object):
         img1  = frame1['image']
         feat1 = frame1['feat'].item()
 
-        if self.nxt_ is not None:
-            # TODO : get rid of this ugly hack
-            x, P = self.nxt_
-            print('x', x)
-            frame1['pose'] = x
-            frame1['cov'] = P
-            self.nxt_ = None
-
         # bypass match_local for already tracking points ...
         pt0_l = landmark['pt'][landmark['track']]
         pt1_l, msk_t = self.tracker_.track(
@@ -492,8 +401,6 @@ class Pipeline(object):
                 obs_lmk_idx,
                 landmark['index'][~landmark['track']][msk_prj][mi0]
                 ], axis=0)
-
-        
 
         # debug ... 
         #pt_dbg = project_to_frame(
@@ -574,6 +481,15 @@ class Pipeline(object):
             err  = vm.norm(prj - pt1_pnp)
             inl  = np.where(err <= 1.0)[0]
         else:
+            # == if(cfg['dbg_pnp']):
+            #print 'frame1-pose', frame1['pose']
+            #dbg = draw_matches(img1, img1,
+            #        project_to_frame(cld_pnp, source_frame=mapframe, target_frame=frame1,
+            #        K=self.cfg_['K'], D=self.cfg_['D']),
+            #        pt1_pnp)
+            #cv2.imshow('pnp', dbg)
+            #cv2.waitKey(0)
+
             suc, rvec, tvec, inl = cv2.solvePnPRansac(
                     cld_pnp[:,None], pt1_pnp[:,None],
                     self.cfg_['K'], self.cfg_['D'],
@@ -591,6 +507,9 @@ class Pipeline(object):
 
         n_pnp_in  = len(cld_pnp)
         n_pnp_out = len(inl) if (inl is not None) else 0
+        #print 'inl', inl
+        print n_pnp_in
+        print n_pnp_out
 
         suc = (suc and (inl is not None) and (n_pnp_out >= 128 or n_pnp_out >= 0.25 * n_pnp_in))
         print('pnp success : {}'.format(suc))
@@ -717,10 +636,12 @@ class Pipeline(object):
     def process(self, img, stamp, data={}):
         if self.state_ == PipelineState.IDLE:
             return
-        if self.state_ == PipelineState.NEED_REF:
-            return self.init_ref(img, stamp, data)
-        elif self.state_ == PipelineState.NEED_MAP:
-            return self.init_map(img, stamp, data)
+        # if self.state_ == PipelineState.NEED_REF:
+        #     return self.init_ref(img, stamp, data)
+        # elif self.state_ == PipelineState.NEED_MAP:
+        #     return self.init_map(img, stamp, data)
+        if self.state_ == PipelineState.INIT:
+            return self.init_map(img, stamp, data) #self.initializer_.compute(
         elif self.state_ == PipelineState.TRACK:
             return self.track(img, stamp, data)
 

@@ -10,7 +10,6 @@ from db import L_POS, L_VEL, L_ACC, A_POS, A_VEL
 from optimize.rot import rpy_to_axa
 from cho_util import vmath as vm
 
-np.random.seed( 3 )
 from GLViewWidget import GLViewWidget
 #GLViewWidget = gl.GLViewWidget
 
@@ -39,6 +38,7 @@ class Viewer(object):
         # draw_cloud()
         pos = db.landmark['pos']
         col = db.landmark['col'][..., ::-1] / 255.0
+        print 'cmax', col.shape
         self.panels_['cld'].setData(pos=pos, color=col)
 
         # draw_camera()

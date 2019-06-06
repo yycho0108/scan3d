@@ -56,12 +56,20 @@ def project_to_frame(cloud, source_frame, target_frame, K, D):
             K, D)
     return res
 
-def extract_color(img, pt):
+def extract_color(img, pt, wsize=1):
     h, w = img.shape[:2]
     idx = vm.rint(pt)[..., ::-1] # (x,y) -> (i,j)
     idx = np.clip(idx, (0,0), (h-1,w-1)) # TODO : fix this hack
-    col = img[idx[:,0], idx[:,1]]
-    # TODO : support sampling window (NxN) average
+
+    if wsize == 1:
+        col = img[idx[:,0], idx[:,1]]
+    else:
+        # TODO : actually use wsize argument
+        di, dj = np.mgrid[-1:2,-1:2]
+        di = di.reshape(-1,1)
+        dj = dj.reshape(-1,1)
+        col = img[di + idx[:,0], dj + idx[:,1]]
+        col = np.mean(col, axis=0)
     return col
 
 def non_max(pt, rsp,
