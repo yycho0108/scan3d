@@ -1,5 +1,6 @@
 #!/usr/bin/env python2
 
+from enum import Enum
 import numpy as np
 import cv2
 import pptk
@@ -34,105 +35,109 @@ from local_map import MapInitializer
 
 # use recorded configuration
 # avoid cluttering global namespace
+
+
 def _CFG_K():
     aov = np.deg2rad([62.2, 48.8])
-    foc = np.divide((1640.,922.), 2.*np.tan( aov / 2 ))
-    foc = np.divide((1280.,720.), (1640.,922.)) * foc
+    foc = np.divide((1640., 922.), 2.*np.tan(aov / 2))
+    foc = np.divide((1280., 720.), (1640., 922.)) * foc
     fx, fy = foc
     cx, cy = 1280/2., 720/2.
-    
-    #return np.reshape([
+
+    # return np.reshape([
     #    499.114583, 0.000000, 325.589216,
     #    0.000000, 498.996093, 238.001597,
     #    0.000000, 0.000000, 1.000000], (3,3))
 
     return np.float32([
-        [fx,0,cx],
-        [0,fy,cy],
-        [0,0,1]
-        ])
+        [fx, 0, cx],
+        [0, fy, cy],
+        [0, 0, 1]
+    ])
+
 
 # configuration
 CFG = dict(
-        scale = 1.0,
-        state_size = 15,
-        K = None,
-        pLK = dict(
-            winSize         = (31,31),
-            maxLevel        = 4,
-            crit            = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 0.03),
-            flags           = 0,
-            minEigThreshold = 1e-3
-            ),
-        kalman = True
-        )
+    scale=1.0,
+    state_size=15,
+    K=None,
+    pLK=dict(
+        winSize=(31, 31),
+        maxLevel=4,
+        crit=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 0.03),
+        flags=0,
+        minEigThreshold=1e-3
+    ),
+    kalman=True
+)
 
-from enum import Enum
+
 class PipelineState(Enum):
-    IDLE     = 0 # default state: do nothing
-    INIT     = 1 # need map initialization
-    TRACK    = 3 # tracking!
-    LOST     = 4 # lost and sad!
+    IDLE = 0  # default state: do nothing
+    INIT = 1  # need map initialization
+    TRACK = 3  # tracking!
+    LOST = 4  # lost and sad!
+
 
 class Pipeline(object):
     def __init__(self, cfg):
-        self.cfg_       = self.build_cfg(cfg)
-        self.detector_  = cv2.FastFeatureDetector_create(
-                threshold=19,
-                nonmaxSuppression=True)
+        self.cfg_ = self.build_cfg(cfg)
+        self.detector_ = cv2.FastFeatureDetector_create(
+            threshold=19,
+            nonmaxSuppression=True)
         self.extractor_ = cv2.ORB_create(2048, edgeThreshold=19)
         #self.extractor_ = cv2.xfeatures2d.SURF_create()
-        self.matcher_   = Matcher(ex=self.extractor_)
-        self.tracker_   = Tracker(pLK=cfg['pLK'])
-        self.kf_        = build_ekf()
-        self.db_        = self.build_db()
-        self.state_     = PipelineState.INIT
+        self.matcher_ = Matcher(ex=self.extractor_)
+        self.tracker_ = Tracker(pLK=cfg['pLK'])
+        self.kf_ = build_ekf()
+        self.db_ = self.build_db()
+        self.state_ = PipelineState.INIT
 
         # higher-level handles?
         self.initializer_ = MapInitializer(
-                db = self.build_db(),
-                matcher = self.matcher_,
-                tracker = self.tracker_,
-                cfg = self.cfg_
-                )
+            db=self.build_db(),
+            matcher=self.matcher_,
+            tracker=self.tracker_,
+            cfg=self.cfg_
+        )
 
     def build_cfg(self, cfg):
         # build derived values
 
         # apply scale
-        w = int( cfg['scale'] * cfg['w'] )
-        h = int( cfg['scale'] * cfg['h'] )
+        w = int(cfg['scale'] * cfg['w'])
+        h = int(cfg['scale'] * cfg['h'])
         K0 = cfg['K']
         K = cfg['scale'] * cfg['K']
-        K[2,2] = 1.0
+        K[2, 2] = 1.0
 
         # image shape
-        shape = (h, w, 3) # TODO : handle monochrome
+        shape = (h, w, 3)  # TODO : handle monochrome
 
         # first, make a copy from argument
         cfg = dict(cfg)
 
         # insert derived values
-        cfg['w']     = w
-        cfg['h']     = h
+        cfg['w'] = w
+        cfg['h'] = h
         cfg['shape'] = shape
-        cfg['K0']    = K0
-        cfg['K']     = K
+        cfg['K0'] = K0
+        cfg['K'] = K
 
-        ## create dynamic type
+        # create dynamic type
         #ks = cfg.keys()
         #cfg_t = namedtuple('PipelineConfig', ks)
-        ## setup dot-referenced aliases
-        #for k, v in cfg.iteritems():
+        # setup dot-referenced aliases
+        # for k, v in cfg.iteritems():
         #    setattr(cfg, k, v)
         return cfg
 
     def build_db(self):
         cfg = self.cfg_
-        ex       = self.extractor_
-        img_fmt  = (cfg['shape'], np.uint8)
-        dsc_t    = (np.uint8 if ex.descriptorType() == cv2.CV_8U else np.float32)
-        dsc_fmt  = (self.extractor_.descriptorSize(), dsc_t)
+        ex = self.extractor_
+        img_fmt = (cfg['shape'], np.uint8)
+        dsc_t = (np.uint8 if ex.descriptorType() == cv2.CV_8U else np.float32)
+        dsc_fmt = (self.extractor_.descriptorSize(), dsc_t)
         return DB(img_fmt=img_fmt, dsc_fmt=dsc_fmt)
 
     def motion_model(self, f0, f1, stamp, use_kalman=False):
@@ -146,7 +151,7 @@ class Pipeline(object):
             T0 = tx.compose_matrix(angles=rxn0, translate=txn0)
             T1 = tx.compose_matrix(angles=rxn1, translate=txn1)
 
-            Tv = np.dot(T1, vm.inv(T0))# Tv * T0 = T1
+            Tv = np.dot(T1, vm.inv(T0))  # Tv * T0 = T1
             T2 = np.dot(Tv, T1)
 
             txn = tx.translation_from_matrix(T2)
@@ -175,7 +180,7 @@ class Pipeline(object):
         # TODO : more robust keyframe heuristic
         # == possibly filter for richness of tracking features?
         feat = (frame['feat']).item()
-        return len(feat.kpt) > 100 # TODO: arbitrary threshold
+        return len(feat.kpt) > 100  # TODO: arbitrary threshold
 
     def build_frame(self, img, stamp):
         """ build a simple frame """
@@ -198,10 +203,10 @@ class Pipeline(object):
         if self.db_.frame_.size >= 2:
             print('motion-model')
             x, P = self.motion_model(
-                    f0 = self.db_.frame_[-2],
-                    f1 = self.db_.frame_[-1],
-                    stamp=stamp,
-                    use_kalman = True)
+                f0=self.db_.frame_[-2],
+                f1=self.db_.frame_[-1],
+                stamp=stamp,
+                use_kalman=True)
         else:
             x = np.zeros(self.cfg_['state_size'])
             P = 1e-6 * np.eye(self.cfg_['state_size'])
@@ -221,12 +226,12 @@ class Pipeline(object):
         # populate frame from motion model
         frame = self.build_frame(img, stamp)
         suc = self.initializer_.compute(frame, data)
-        #print(data['dbg-tv'])
+        # print(data['dbg-tv'])
         if not suc:
             return
 
-        self.db_.extend( self.initializer_.db_)
-        self.transition( PipelineState.TRACK)
+        self.db_.extend(self.initializer_.db_)
+        self.transition(PipelineState.TRACK)
 
         #print self.db_.landmark_['pos'][self.db_.landmark_['tri']][:5]
         #print self.initializer_.db_.landmark_['pos'][self.db_.landmark_['tri']][:5]
@@ -245,16 +250,16 @@ class Pipeline(object):
 
             viz0 = cv2.drawKeypoints(img0, feat0.kpt, None)
             viz1 = cv2.drawKeypoints(img1, feat1.kpt, None)
-            viz  = draw_matches(viz0, viz1, pt0m[msk], pt1m[msk])
+            viz = draw_matches(viz0, viz1, pt0m[msk], pt1m[msk])
             data['viz'] = viz
 
             # == if cfg['dbg-cloud']:
             dr_data = {}
             cld_viz, col_viz = DenseRec(self.cfg_['K']).compute(
-                    img0, img1,
-                    P1=data['P0'],
-                    P2=data['P1'],
-                    data=dr_data)
+                img0, img1,
+                P1=data['P0'],
+                P2=data['P1'],
+                data=dr_data)
             cdist = vm.norm(cld_viz)
             data['cld_viz'] = cld_viz[cdist < np.percentile(cdist, 95)]
             data['col_viz'] = col_viz[cdist < np.percentile(cdist, 95)]
@@ -266,8 +271,8 @@ class Pipeline(object):
         #idx0, idx1 = keyframe['index'], frame1['index']
         obs = self.db_.observation
         msk = np.logical_and(
-                idx0 <= obs['src_idx'],
-                obs['src_idx'] <= idx1)
+            idx0 <= obs['src_idx'],
+            obs['src_idx'] <= idx1)
 
         # parse observation
         i_src = obs['src_idx'][msk]
@@ -280,23 +285,23 @@ class Pipeline(object):
         i_lmk_alt, i_a2l, i_l2a = index_remap(i_lmk)
 
         # 1. select targets based on new index
-        i_src     = i_s2a
-        i_lmk     = i_l2a
-        frames    = self.db_.frame[i_a2s[i_src_alt]]
+        i_src = i_s2a
+        i_lmk = i_l2a
+        frames = self.db_.frame[i_a2s[i_src_alt]]
         landmarks = self.db_.landmark[i_a2l[i_lmk_alt]]
 
         # parse data
-        txn       = frames['pose'][:, L_POS]
-        rxn       = frames['pose'][:, A_POS]
-        lmk       = landmarks['pos']
+        txn = frames['pose'][:, L_POS]
+        rxn = frames['pose'][:, A_POS]
+        lmk = landmarks['pos']
 
         data_ba = {}
         # NOTE : txn/rxn will be internally inverted to reduce duplicate compute.
         suc = BundleAdjustment(
-                i_src, i_lmk, p_obs, # << observation
-                txn, rxn, lmk, self.cfg_['K'],
-                axa = True
-                ).compute(data=data_ba)       # << data
+            i_src, i_lmk, p_obs,  # << observation
+            txn, rxn, lmk, self.cfg_['K'],
+            axa=True
+        ).compute(data=data_ba)       # << data
 
         if suc:
             # TODO : apply post-processing kalman filter?
@@ -307,7 +312,7 @@ class Pipeline(object):
             lmk = data_ba['lmk']
             self.db_.frame['pose'][i_a2s[i_src_alt], L_POS] = txn
             self.db_.frame['pose'][i_a2s[i_src_alt], A_POS] = rxn
-            self.db_.landmark['pos'][i_a2l[i_lmk_alt]]      = lmk
+            self.db_.landmark['pos'][i_a2l[i_lmk_alt]] = lmk
 
     @profile(sort='cumtime')
     def track(self, img, stamp, data={}):
@@ -316,21 +321,21 @@ class Pipeline(object):
         # fetch frame pair
         # TODO : add landmarks along the way
         # TODO : update landmarks through optimization
-        mapframe = self.db_.keyframe[0] # first keyframe = map frame
-        keyframe = self.db_.keyframe[-1] # last **keyframe**
-        frame0 = self.db_.frame[-1] # last **frame**
+        mapframe = self.db_.keyframe[0]  # first keyframe = map frame
+        keyframe = self.db_.keyframe[-1]  # last **keyframe**
+        frame0 = self.db_.frame[-1]  # last **frame**
         frame1 = self.build_frame(img, stamp)
         # print('prior position',
         #         frame1['pose'][L_POS], frame1['pose'][A_POS])
         landmark = self.db_.landmark
 
-        img1  = frame1['image']
+        img1 = frame1['image']
         feat1 = frame1['feat'].item()
 
         # bypass match_local for already tracking points ...
         pt0_l = landmark['pt'][landmark['track']]
         pt1_l, msk_t = self.tracker_.track(
-                frame0['image'], img1, pt0_l, return_msk=True)
+            frame0['image'], img1, pt0_l, return_msk=True)
 
         # apply tracking mask
         pt0_l = pt0_l[msk_t]
@@ -342,16 +347,16 @@ class Pipeline(object):
 
         # search additional points
         cld0_l = landmark['pos'][~landmark['track']]
-        dsc_l  = landmark['dsc'][~landmark['track']]
+        dsc_l = landmark['dsc'][~landmark['track']]
 
         msk_prj = None
         if len(cld0_l) >= 128:
             # merge with projections
             pt0_cld_l = project_to_frame(cld0_l,
-                    source_frame=mapframe,
-                    target_frame=frame1,
-                    K=self.cfg_['K'],
-                    D=self.cfg_['D'])
+                                         source_frame=mapframe,
+                                         target_frame=frame1,
+                                         K=self.cfg_['K'],
+                                         D=self.cfg_['D'])
 
             # in-frame projection mask
             msk_prj = np.logical_and.reduce([
@@ -359,43 +364,43 @@ class Pipeline(object):
                 pt0_cld_l[..., 0] < self.cfg_['w'],
                 0 <= pt0_cld_l[..., 1],
                 pt0_cld_l[..., 1] < self.cfg_['h'],
-                ])
+            ])
 
-        pt0  = pt0_l
-        pt1  = pt1_l
+        pt0 = pt0_l
+        pt1 = pt1_l
         cld0 = landmark['pos'][landmark['track']]
         obs_lmk_idx = landmark['index'][landmark['track']]
 
         search_map = (
-                False and
-                len(cld0) <= 256 and
-                (msk_prj is not None) and
-                (msk_prj.sum() >= 16)
-                )
+            False and
+            len(cld0) <= 256 and
+            (msk_prj is not None) and
+            (msk_prj.sum() >= 16)
+        )
 
         if search_map:
             # sample points from the map
             mi0, mi1 = match_local(
-                    pt0_cld_l[msk_prj], feat1.pt,
-                    dsc_l[msk_prj], feat1.dsc,
-                    hamming = (not feat1.dsc.dtype == np.float32),
-                    )
+                pt0_cld_l[msk_prj], feat1.pt,
+                dsc_l[msk_prj], feat1.dsc,
+                hamming=(not feat1.dsc.dtype == np.float32),
+            )
 
             # collect all parts
-            pt0  = np.concatenate([pt0, pt0_cld_l[msk_prj][mi0]], axis=0)
-            pt1  = np.concatenate([pt1, feat1.pt[mi1]], axis=0)
+            pt0 = np.concatenate([pt0, pt0_cld_l[msk_prj][mi0]], axis=0)
+            pt1 = np.concatenate([pt1, feat1.pt[mi1]], axis=0)
             cld0 = np.concatenate([
                 cld0,
                 landmark['pos'][~landmark['track']][msk_prj][mi0]
-                ], axis=0)
+            ], axis=0)
 
             obs_lmk_idx = np.concatenate([
                 obs_lmk_idx,
                 landmark['index'][~landmark['track']][msk_prj][mi0]
-                ], axis=0)
+            ], axis=0)
 
-        # debug ... 
-        #pt_dbg = project_to_frame(
+        # debug ...
+        # pt_dbg = project_to_frame(
         #        landmark['pos'][landmark['track']],
         #        frame1,
         #        self.cfg_['K'], self.cfg_['D'])
@@ -405,7 +410,7 @@ class Pipeline(object):
         #cv2.imshow('dbg', img_dbg)
         #print_ratio(len(pt0_l), len(pt0), name='point source')
 
-        #if len(mi0) <= 0:
+        # if len(mi0) <= 0:
         #    viz1 = draw_points(img1.copy(), pt0)
         #    viz2 = draw_points(img1.copy(), feat1.pt)
         #    viz = np.concatenate([viz1, viz2], axis=1)
@@ -413,7 +418,7 @@ class Pipeline(object):
         #    return False
 
         #print_ratio(len(mi0), len(pt0))
-        #suc, rvec, tvec = cv2.solvePnP(
+        # suc, rvec, tvec = cv2.solvePnP(
         #        cld0[:, None], pt1[:, None],
         #        self.cfg_['K'], self.cfg_['D'],
         #        flags = cv2.SOLVEPNP_EPNP
@@ -422,19 +427,19 @@ class Pipeline(object):
         #print 'euler', tx.euler_from_matrix(cv2.Rodrigues(rvec)[0])
 
         T_i = tx.inverse_matrix(
-                tx.compose_matrix(
-                    translate=frame1['pose'][L_POS],
-                    angles=frame1['pose'][A_POS]
-                    ))
-        rvec0 = cv2.Rodrigues(T_i[:3,:3])[0]
-        tvec0 = T_i[:3,3:]
+            tx.compose_matrix(
+                translate=frame1['pose'][L_POS],
+                angles=frame1['pose'][A_POS]
+            ))
+        rvec0 = cv2.Rodrigues(T_i[:3, :3])[0]
+        tvec0 = T_i[:3, 3:]
 
         if len(pt1) >= 1024:
             # prune
             nmx_idx = non_max(
-                    pt1,
-                    landmark['rsp'][obs_lmk_idx]
-                    )
+                pt1,
+                landmark['rsp'][obs_lmk_idx]
+            )
             print_ratio(len(nmx_idx), len(pt1), name='non_max')
             cld_pnp, pt1_pnp = cld0[nmx_idx], pt1[nmx_idx]
         else:
@@ -448,86 +453,87 @@ class Pipeline(object):
             #print('txn-in', frame1['pose'][L_POS])
             #print('rxn-in', frame1['pose'][A_POS])
             suc = BundleAdjustment(
-                    i_src = np.full(len(cld_pnp), 0),
-                    i_lmk = np.arange(len(cld_pnp)),
-                    p_obs = pt1_pnp,
-                    txn   = frame1['pose'][L_POS][None,...],
-                    rxn   = frame1['pose'][A_POS][None,...],
-                    lmk   = cld_pnp,
-                    K     = self.cfg_['K'],
-                    pose_only=True).compute(
-                            crit=dict(loss='soft_l1', xtol=1e-8, f_scale=np.sqrt(5.991)),
-                            data=data_pnp)
+                i_src=np.full(len(cld_pnp), 0),
+                i_lmk=np.arange(len(cld_pnp)),
+                p_obs=pt1_pnp,
+                txn=frame1['pose'][L_POS][None, ...],
+                rxn=frame1['pose'][A_POS][None, ...],
+                lmk=cld_pnp,
+                K=self.cfg_['K'],
+                pose_only=True).compute(
+                crit=dict(loss='soft_l1', xtol=1e-8, f_scale=np.sqrt(5.991)),
+                data=data_pnp)
             #print('txn-out', data_pnp['txn'][0])
             #print('rxn-out', data_pnp['rxn'][0])
-            T    = tx.compose_matrix(
-                    translate=data_pnp['txn'][0],
-                    angles=data_pnp['rxn'][0])
-            Ti   = tx.inverse_matrix(T)
-            rxn_pnp  = np.float32(tx.euler_from_matrix(Ti))
-            txn_pnp  = tx.translation_from_matrix(Ti)
-            rvec = cv2.Rodrigues(Ti[:3,:3])[0]
+            T = tx.compose_matrix(
+                translate=data_pnp['txn'][0],
+                angles=data_pnp['rxn'][0])
+            Ti = tx.inverse_matrix(T)
+            rxn_pnp = np.float32(tx.euler_from_matrix(Ti))
+            txn_pnp = tx.translation_from_matrix(Ti)
+            rvec = cv2.Rodrigues(Ti[:3, :3])[0]
             tvec = txn_pnp
-            prj  = cvu.project_points(cld_pnp, rvec, tvec,
-                    self.cfg_['K'], self.cfg_['D'])
-            err  = vm.norm(prj - pt1_pnp)
-            inl  = np.where(err <= 1.0)[0]
+            prj = cvu.project_points(cld_pnp, rvec, tvec,
+                                     self.cfg_['K'], self.cfg_['D'])
+            err = vm.norm(prj - pt1_pnp)
+            inl = np.where(err <= 1.0)[0]
         else:
             # == if(cfg['dbg_pnp']):
             #print 'frame1-pose', frame1['pose']
-            #dbg = draw_matches(img1, img1,
+            # dbg = draw_matches(img1, img1,
             #        project_to_frame(cld_pnp, source_frame=mapframe, target_frame=frame1,
             #        K=self.cfg_['K'], D=self.cfg_['D']),
             #        pt1_pnp)
             #cv2.imshow('pnp', dbg)
-            #cv2.waitKey(0)
+            # cv2.waitKey(0)
 
             suc, rvec, tvec, inl = cv2.solvePnPRansac(
-                    cld_pnp[:,None], pt1_pnp[:,None],
-                    self.cfg_['K'], self.cfg_['D'],
-                    useExtrinsicGuess=True,
-                    rvec=rvec0,
-                    tvec=tvec0,
-                    iterationsCount=1024,
-                    reprojectionError=1.0,
-                    confidence=0.999,
-                    flags=cv2.SOLVEPNP_EPNP
-                    #flags=cv2.SOLVEPNP_DLS
-                    #flags=cv2.SOLVEPNP_ITERATIVE
-                    #minInliersCount=0.5*_['pt0']
-                    )
+                cld_pnp[:, None], pt1_pnp[:, None],
+                self.cfg_['K'], self.cfg_['D'],
+                useExtrinsicGuess=True,
+                rvec=rvec0,
+                tvec=tvec0,
+                iterationsCount=1024,
+                reprojectionError=1.0,
+                confidence=0.999,
+                flags=cv2.SOLVEPNP_EPNP
+                # flags=cv2.SOLVEPNP_DLS
+                # flags=cv2.SOLVEPNP_ITERATIVE
+                # minInliersCount=0.5*_['pt0']
+            )
 
-        n_pnp_in  = len(cld_pnp)
+        n_pnp_in = len(cld_pnp)
         n_pnp_out = len(inl) if (inl is not None) else 0
         #print 'inl', inl
         print n_pnp_in
         print n_pnp_out
 
-        suc = (suc and (inl is not None) and (n_pnp_out >= 128 or n_pnp_out >= 0.25 * n_pnp_in))
+        suc = (suc and (inl is not None) and (
+            n_pnp_out >= 128 or n_pnp_out >= 0.25 * n_pnp_in))
         print('pnp success : {}'.format(suc))
         if inl is not None:
             print_ratio(n_pnp_out, n_pnp_in, name='pnp')
 
         # visualize match statistics
         viz_pt0 = project_to_frame(cld0,
-                source_frame=mapframe,
-                target_frame=keyframe, # TODO: keyframe may no longer be true?
-                K=self.cfg_['K'],
-                D=self.cfg_['D'])
+                                   source_frame=mapframe,
+                                   target_frame=keyframe,  # TODO: keyframe may no longer be true?
+                                   K=self.cfg_['K'],
+                                   D=self.cfg_['D'])
         viz_msk = np.logical_and.reduce([
-            0 <= viz_pt0[:,0],
-            viz_pt0[:,0] < self.cfg_['w'],
-            0 <= viz_pt0[:,1],
-            viz_pt0[:,1] < self.cfg_['h'],
-            ])
+            0 <= viz_pt0[:, 0],
+            viz_pt0[:, 0] < self.cfg_['w'],
+            0 <= viz_pt0[:, 1],
+            viz_pt0[:, 1] < self.cfg_['h'],
+        ])
         viz1 = draw_points(img1.copy(), feat1.pt)
-        viz  = draw_matches(keyframe['image'], viz1,
-                viz_pt0[viz_msk], pt1[viz_msk])
+        viz = draw_matches(keyframe['image'], viz1,
+                           viz_pt0[viz_msk], pt1[viz_msk])
         data['viz'] = viz
-              
+
         # obtained position!
-        R   = cv2.Rodrigues(rvec)[0]
-        t   = np.float32(tvec)
+        R = cv2.Rodrigues(rvec)[0]
+        t = np.float32(tvec)
         R, t = vm.Rti(R, t)
         rxn = np.reshape(tx.euler_from_matrix(R), 3)
         txn = t.ravel()
@@ -540,31 +546,35 @@ class Pipeline(object):
                 # kalman_update()
                 self.kf_.x = frame0['pose']
                 self.kf_.P = frame0['cov']
-                self.kf_.predict( frame1['stamp'] - frame0['stamp'] )
-                self.kf_.update(np.concatenate([txn, rxn])) 
+                self.kf_.predict(frame1['stamp'] - frame0['stamp'])
+                self.kf_.update(np.concatenate([txn, rxn]))
                 frame1['pose'] = self.kf_.x
-                frame1['cov']  = self.kf_.P
+                frame1['cov'] = self.kf_.P
             else:
                 # hard_update()
                 frame1['pose'][L_POS] = t.ravel()
                 frame1['pose'][A_POS] = tx.euler_from_matrix(R)
 
             self.db_.observation.extend(dict(
-                    src_idx=np.full_like(obs_lmk_idx, frame1['index']), # observation frame source
-                    lmk_idx=obs_lmk_idx, # landmark index
-                    point=pt1
-                    ))
-        self.db_.frame.append( frame1 )
+                # observation frame source
+                src_idx=np.full_like(obs_lmk_idx, frame1['index']),
+                lmk_idx=obs_lmk_idx,  # landmark index
+                point=pt1
+            ))
+        self.db_.frame.append(frame1)
         x = 1
 
         need_kf = np.logical_or.reduce([
             not suc,  # PNP failed -- try new keyframe
-            suc and (n_pnp_out < 128), # PNP was decent but would be better to have a new frame
-            (frame1['index'] - keyframe['index'] > 32) and (msk_t.sum() < 256) # = frame is somewhat stale
-            ]) and self.is_keyframe(frame1)
+            # PNP was decent but would be better to have a new frame
+            suc and (n_pnp_out < 128),
+            # = frame is somewhat stale
+            (frame1['index'] - keyframe['index'] > 32) and (msk_t.sum() < 256)
+        ]) and self.is_keyframe(frame1)
         #need_kf = False
 
-        run_ba = (frame1['index'] % 8) == 0 # ?? better criteria for running BA?
+        # ?? better criteria for running BA?
+        run_ba = (frame1['index'] % 8) == 0
         #run_ba = False
         #run_ba = need_kf
 
@@ -573,24 +583,25 @@ class Pipeline(object):
 
         if need_kf:
             for index in reversed(range(keyframe['index'], frame1['index'])):
-                feat0, feat1 = self.db_.frame[index]['feat'], frame1['feat'].item()
+                feat0, feat1 = self.db_.frame[index]['feat'], frame1['feat'].item(
+                )
                 mi0, mi1 = self.matcher_.match(
-                        feat0.dsc, feat1.dsc,
-                        lowe=0.8, fold=False)
+                    feat0.dsc, feat1.dsc,
+                    lowe=0.8, fold=False)
                 data_tv = {}
                 suc_tv, det_tv = TwoView(
-                        feat0.pt[mi0],
-                        feat1.pt[mi1],
-                        self.cfg_['K']).compute(data=data_tv)
+                    feat0.pt[mi0],
+                    feat1.pt[mi1],
+                    self.cfg_['K']).compute(data=data_tv)
 
                 if suc_tv:
                     print('======================= NEW KEYFRAME ===')
                     xfm0 = pose_to_xfm(self.db_.frame[index]['pose'])
                     xfm1 = pose_to_xfm(frame1['pose'])
                     scale_ref = np.linalg.norm(
-                            tx.translation_from_matrix(vm.Ti(xfm1).dot(xfm0))
-                            )
-                    scale_tv  = np.linalg.norm(data_tv['t'])
+                        tx.translation_from_matrix(vm.Ti(xfm1).dot(xfm0))
+                    )
+                    scale_tv = np.linalg.norm(data_tv['t'])
                     # TODO : does NOT consider "duplicate" landmark identities
 
                     # IMPORTANT: frame1  is a `copy` of "last_frame"
@@ -602,21 +613,33 @@ class Pipeline(object):
                     msk_cld = data_tv['msk_cld']
                     cld1 = data_tv['cld1'][msk_cld] * (scale_ref / scale_tv)
                     cld = transform_cloud(cld1,
-                            source_frame=frame1,
-                            target_frame=mapframe,
-                            )
-                    col = extract_color(frame1['image'], feat1.pt[mi1][msk_cld])
+                                          source_frame=frame1,
+                                          target_frame=mapframe,
+                                          )
+                    col = extract_color(
+                        frame1['image'], feat1.pt[mi1][msk_cld])
+
                     local_map = dict(
-                            index   = lmk_idx0 + np.arange(len(cld)), # landmark index
-                            src     = np.full(len(cld), frame1['index']), # source index
-                            dsc     = feat1.dsc[mi1][msk_cld], # landmark descriptor
-                            rsp     = [feat1.kpt[i].response for i in np.arange(len(feat1.kpt))[mi1][msk_cld]], # response "strength"
-                            pos     = cld, # landmark position [[ map frame ]]
-                            pt      = feat1.pt[mi1][msk_cld], # tracking point initialization
-                            tri     = np.ones(len(cld), dtype=np.bool),
-                            col     = col, # debug : point color information
-                            track   = np.ones(len(cld), dtype=np.bool) # tracking status
-                            )
+                        index=lmk_idx0 + np.arange(len(cld)),  # landmark index
+                        src=np.full(len(cld), frame1['index']),  # source index
+                        dsc=feat1.dsc[mi1][msk_cld],  # landmark descriptor
+                        rsp=[feat1.kpt[i].response for i in np.arange(
+                            len(feat1.kpt))[mi1][msk_cld]],  # response "strength"
+
+                        # tracking point initialization
+                        pt0=feat1.pt[mi1][msk_cld],
+                        invd=1.0 / cld1[..., 2],
+                        depth=cld1[..., 2],
+
+                        pos=cld,  # landmark position [[ map frame ]]
+                        # tracking status
+                        track=np.ones(len(cld), dtype=np.bool),
+
+                        # tracking point initialization
+                        pt=feat1.pt[mi1][msk_cld],
+                        tri=np.ones(len(cld), dtype=np.bool),
+                        col=col,  # debug : point color information
+                    )
                     # hmm?
                     self.db_.landmark.extend(local_map)
                     break
@@ -631,17 +654,19 @@ class Pipeline(object):
         # elif self.state_ == PipelineState.NEED_MAP:
         #     return self.init_map(img, stamp, data)
         if self.state_ == PipelineState.INIT:
-            return self.init_map(img, stamp, data) #self.initializer_.compute(
+            return self.init_map(img, stamp, data)  # self.initializer_.compute(
         elif self.state_ == PipelineState.TRACK:
             return self.track(img, stamp, data)
 
     def save(self, path):
         if not os.path.exists(path):
             os.makedirs(path)
-        D_ = lambda p : os.path.join(path, p)
+
+        def D_(p): return os.path.join(path, p)
         np.save(D_('config.npy'), self.cfg_)
         self.db_.save(path)
-            
+
+
 def main():
     #src = './scan_20190212-233625.h264'
     #reader = CVCameraReader(src, K=CFG['K'])
@@ -655,69 +680,72 @@ def main():
     reader.set_pos(1000)
     auto = True
 
-    pl  = Pipeline(cfg=cfg)
+    pl = Pipeline(cfg=cfg)
     cv2.namedWindow('viz', cv2.WINDOW_NORMAL)
     while True:
         suc, idx, stamp, img = reader.read()
         #cv2.imshow('img', img)
-        if not suc: break
+        if not suc:
+            break
         img = cv2.resize(img, None, fx=CFG['scale'], fy=CFG['scale'])
         data = {}
         pl.process(img, stamp, data)
-        #try:
+        # try:
         #    pl.process(img, stamp, data)
-        #except Exception as e:
+        # except Exception as e:
         #    print('Exception while processing: {}'.format(e))
         #    break
         if 'viz' in data:
             cv2.imshow('viz', data['viz'])
         k = cv2.waitKey(1 if auto else 0)
-        if k in [27, ord('q')]: break
+        if k in [27, ord('q')]:
+            break
         if k in [ord(' ')]:
             auto = (not auto)
 
         if ('col_viz' in data) and ('cld_viz' in data):
             cld = data['cld_viz']
             col = data['col_viz']
-            # optical -> base 
-            cld = vm.tx3( vm.tx.euler_matrix(-np.pi/2, 0, -np.pi/2), cld)
+            # optical -> base
+            cld = vm.tx3(vm.tx.euler_matrix(-np.pi/2, 0, -np.pi/2), cld)
             ax = plt.gca(projection='3d')
             ax.cla()
-            ax.scatter(cld[:,0], cld[:,1], cld[:,2],
-                    c = (col[...,::-1] / 255.0))
+            ax.scatter(cld[:, 0], cld[:, 1], cld[:, 2],
+                       c=(col[..., ::-1] / 255.0))
 
-            ax.view_init(elev=0,azim=180)
+            ax.view_init(elev=0, azim=180)
             ax.set_xlabel('x')
             ax.set_ylabel('y')
             ax.set_zlabel('z')
-            #set_axes_equal(ax)
+            # set_axes_equal(ax)
 
             plt.show()
             pass
 
     pl.save('/tmp/db')
 
-        #try:
-        #    msk1 = data['msk_cld']
-        #    idx1 = vm.rint(data['pt1m'][msk1][...,::-1])
-        #    col1 = data['img1'][idx1[:,0], idx1[:,1]]
-        #    cld1 = data['cld1'][msk1]
-        #    ax = plt.gca(projection='3d')
-        #    ax.scatter(cld1[:,0], cld1[:,1], cld1[:,2],
-        #            c = (col1[...,::-1] / 255.0))
-        #    ax.set_xlabel('x')
-        #    ax.set_ylabel('y')
-        #    ax.set_zlabel('z')
-        #    #plt.pause(0.001)
-        #    plt.show()
-        #    #v = pptk.viewer(
-        #    #        data['cld1'][msk1], col1[...,::-1]
-        #    #        )
-        #    #v.wait()
-        #    #v.close()
-        #except Exception as e:
-        #    print e
-        #    continue
+    # try:
+    #    msk1 = data['msk_cld']
+    #    idx1 = vm.rint(data['pt1m'][msk1][...,::-1])
+    #    col1 = data['img1'][idx1[:,0], idx1[:,1]]
+    #    cld1 = data['cld1'][msk1]
+    #    ax = plt.gca(projection='3d')
+    #    ax.scatter(cld1[:,0], cld1[:,1], cld1[:,2],
+    #            c = (col1[...,::-1] / 255.0))
+    #    ax.set_xlabel('x')
+    #    ax.set_ylabel('y')
+    #    ax.set_zlabel('z')
+    #    #plt.pause(0.001)
+    #    plt.show()
+    #    #v = pptk.viewer(
+    #    #        data['cld1'][msk1], col1[...,::-1]
+    #    #        )
+    #    #v.wait()
+    #    #v.close()
+    # except Exception as e:
+    #    print e
+    #    continue
+
 
 if __name__ == '__main__':
     main()
