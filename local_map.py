@@ -5,6 +5,7 @@ from db import DB
 from twoview import TwoView
 from util import *
 from cho_util.viz import draw_matches, draw_points, print_ratio
+from optimize.ba import BundleAdjustment
 
 class MapInitializer(object):
     def __init__(self, db, matcher, tracker, cfg):
@@ -34,16 +35,27 @@ class MapInitializer(object):
         n_pt  = len(feat.pt)
         col = extract_color(frame['image'], feat.pt)
 
+        # make a pos guess
+        fx,fy,cx,cy = self.cfg_['K'][(0,1,0,1),(0,1,2,2)]
+
+        lmk_x = (feat.pt[:,0] - cx) / fx
+        lmk_y = (feat.pt[:,1] - cy) / fy
+        lmk_z = np.ones_like(lmk_x)
+        pos   = np.stack([lmk_x, lmk_y, lmk_z], axis=-1)
+
         entry = dict(
                 index   = np.arange(n_pt), # landmark index
                 src     = np.full(n_pt, frame['index']), # source index
                 dsc     = feat.dsc, # landmark descriptor
                 rsp     = [k.response for k in feat.kpt],
-                pos     = np.zeros(shape=(n_pt,3), dtype=np.float32), # landmark position [[ map frame ]]
+                pt0      = feat.pt, # tracking point initialization
+                invd    = (1.0 / lmk_z),
+                depth   = lmk_z,
+                pos     = pos, # landmark position [[ map frame ]]
+                track   = np.ones(n_pt, dtype=np.bool), # tracking status
                 pt      = feat.pt, # tracking point initialization
-                tri     = np.zeros(n_pt, dtype=np.bool), # **NOT** triangulated
+                tri     = np.ones(n_pt, dtype=np.bool), # **NOT** triangulated?
                 col     = col, # debug : point color information
-                track   = np.ones(n_pt, dtype=np.bool) # tracking status
                 )
         # TODO : something more efficient than zip(*[]) ... ?
         self.db_.landmark.extend(zip(*[
@@ -89,14 +101,57 @@ class MapInitializer(object):
 
         return (len(lmk_idx) > 128)
 
+    def bundle_adjust(self, data={}):
+        obs = self.db_.observation
+        i_src = obs['src_idx']
+        i_lmk = obs['lmk_idx']
+        p_obs = obs['point']
+
+        frames = self.db_.frame
+        txn = frames['pose'][:, L_POS]
+        rxn = frames['pose'][:, A_POS]
+
+        lmk = self.db_.landmark['pos']
+
+        #print ('fini')
+        #print np.all(np.isfinite(txn))
+        #print np.all(np.isfinite(rxn))
+        #print np.all(np.isfinite(lmk))
+        #print ('lmk', lmk)
+
+        data_ba = {}
+        suc = BundleAdjustment(
+                i_src, i_lmk, p_obs,
+                txn, rxn, lmk, self.cfg_['K'],
+                axa=True).compute(data = data_ba)
+
+        if suc:
+            txn = data_ba['txn']
+            rxn = data_ba['rxn']
+            lmk = data_ba['lmk']
+            self.db_.frame['pose'][:, L_POS] = txn
+            self.db_.frame['pose'][:, A_POS] = rxn
+            self.db_.landmark['pos'] = lmk
+
+        # return updated data
+        # TODO: ensure keys do not collide
+        # data.update( data_ba )
+
     def optimize(self):
         # TODO: run bundle adjustment here ...
+
+        # 1. get rid of `useless` landmarks
+        lmk_idx = np.nonzero(self.db_.landmark['track'])[0]
+        #lmk_idx = np.nonzero(self.db_.landmark['tri'])[0]
+        self.db_.prune(lmk_idx=lmk_idx)
+
+        # 2. run BA
+        data_ba = {}
+        self.bundle_adjust(data=data_ba)
+
+        # 3. Finalize outputs
         src_idx = np.int32([self.db_.frame[0]['index'], self.db_.frame[-1]['index']])
-        lmk_idx = np.nonzero(self.db_.landmark['tri'])[0]
-        #lmk_idx = np.nonzero(self.db_.landmark['track'])[0]
-        # print 'source', src_idx.shape
-        # print 'landmark', lmk_idx.shape
-        self.db_.prune(src_idx=src_idx, lmk_idx=lmk_idx)
+        self.db_.prune(src_idx=src_idx)
 
     def compute(self, frame, data={}):
         if self.db_.frame.size <= 0:
@@ -154,10 +209,10 @@ class MapInitializer(object):
         cur_frame['pose'][L_POS] = t.ravel()
         cur_frame['pose'][A_POS] = tx.euler_from_matrix(R)
 
-        print 'hmmm.................'
-        print ref_frame['index']
-        print cur_frame['index']
-        print cur_frame['pose']
+        #print 'hmmm.................'
+        #print ref_frame['index']
+        #print cur_frame['index']
+        #print cur_frame['pose']
 
         # cld0 <==> pt1m[idx_cld]
         #dbg = draw_matches(
@@ -170,10 +225,11 @@ class MapInitializer(object):
         #cv2.imshow('dbg-pnp', dbg)
         #cv2.waitKey(0)
 
-        print 'validation ...'
-        print len(self.db_.landmark[idx_cld])
-        print len(cld0)
-        print cld0[:5]
+        # print 'validation ...'
+        # print len(self.db_.landmark[idx_cld])
+        # print len(cld0)
+        # print cld0[:5]
+        # print self.db_.landmark['pos'][mi0[idx_cld]][:5]
 
         # optimize map + finalize
         self.optimize()

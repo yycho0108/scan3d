@@ -31,7 +31,6 @@ class NDRecord(object):
         if new_cap < self.cap_:
             self.size_ = min(self.size_, new_cap)
             return
-
         # handle `expansion` case
         #self.data_ = np.resize(self.data_, self.cap_)
         self.cap_ = int(new_cap)
@@ -40,9 +39,6 @@ class NDRecord(object):
         n_keep = min(self.size_, new_cap)
         self.data_[:n_keep] = data[:n_keep]
         self.size_ = n_keep
-
-        #for k in self.dtype_.names:
-        #    setattr(self, k, self.data_[k])
 
     def append(self, rec):
         if self.size_ >= self.cap_:
@@ -59,12 +55,30 @@ class NDRecord(object):
         return self.data.__setitem__(*args, **kwargs)
 
     def extend(self, recs):
-        if (self.size_ + len(recs)) >= self.cap_:
-            self.resize(max(2*self.cap_, self.size_+len(recs)))
-            return self.extend(recs)
+        if isinstance(recs, dict):
+            # each field specified independently
+            if set(recs.keys()) != set(self.dtype_.names):
+                raise ValueError("Input format does not match : {} vs. {}".format(
+                    recs.keys(), self.dtype_.names
+                    ))
+            n_add = len( recs.values()[0] )
+            new_size = self.size_+n_add
+            if (new_size >= self.cap_):
+                self.resize(max(2*self.cap_, new_size))
+
+            d_new = self.data_[self.size_:new_size]
+            for k in self.dtype_.names:
+                d_new[k] = recs[k]
+
+            self.size_ = new_size
         else:
-            self.data_[self.size_:self.size_+len(recs)] = recs
-            self.size_ += len(recs)
+            # default behavior: treat as list with same axial alignment
+            if (self.size_ + len(recs)) >= self.cap_:
+                self.resize(max(2*self.cap_, self.size_+len(recs)))
+                return self.extend(recs)
+            else:
+                self.data_[self.size_:self.size_+len(recs)] = recs
+                self.size_ += len(recs)
 
     @property
     def data(self):
@@ -158,8 +172,24 @@ def test_ndrec():
     for i in xrange(100):
         y.append((str(i), i, i+0.1))
 
+    y.extend(dict(
+        f0 = ["def", "ghi",],
+        f1 = [153, 556],
+        f2 = [15.0, 12.3]
+        ))
+
+    print '!!'
     print y.data[-2:]
     y.help()
+
+    print y[:2]['f0']
+    print y['f0'][:2]
+
+    # slicing works either way
+    y[:2]['f0'] = "x"
+    print y['f0'][:2]
+    y['f0'][:2] = "a"
+    print y[:2]['f0']
 
 def main():
     #test_dictrec()

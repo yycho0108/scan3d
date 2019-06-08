@@ -15,6 +15,12 @@ L_ACC = np.s_[6:9]
 A_POS = np.s_[9:12]
 A_VEL = np.s_[12:15]
 
+# two of the most useful conversions ...
+def lpos_from_pose(pose):
+    return pose[..., L_POS]
+def apos_from_pose(pose):
+    return pose[..., A_POS]
+
 class DB(object):
     """
     Visual SLAM Database.
@@ -65,6 +71,7 @@ class DB(object):
         if np.any([e is None for e in data]):
             print('Not enough information : DB Initialization will be delayed.')
 
+    """ container wrappers """
     def reset(self):
         recs = [self.frame_, self.landmark_, self.observation_]
         for rec in recs:
@@ -72,6 +79,13 @@ class DB(object):
                 continue
             rec.reset()
 
+    def extend(self, db):
+        rec_old = [self.frame_, self.landmark_, self.observation_]
+        rec_new = [db.frame_, db.landmark_, db.observation_]
+        for (r_o, r_n) in zip(rec_old, rec_new):
+            r_o.extend(r_n)
+
+    """ datatype wrappers """
     def build_frame(self, img_fmt):
         img_s, img_t = img_fmt
         return NDRecord([
@@ -88,15 +102,25 @@ class DB(object):
         dsc_s, dsc_t = dsc_fmt
         # instantiate data
         return NDRecord([
+            # index tracking
             ('index' , np.int32   , 1     ) ,
             ('src'   , np.int32   , 1     ) ,
+            # feature descriptor
             ('dsc'   , dsc_t      , dsc_s ) ,
             ('rsp'   , np.float32 , 1     ) ,
+            # initial observation
+            ('pt0'   , np.float32 , 2     ) ,
+            ('invd'  , np.float32 , 1     ) ,
+            # derived : depth/position cache
+            ('depth' , np.float32 , 1     ) ,
             ('pos'   , np.float32 , 3     ) ,
+            # tracking
+            ('track' , np.bool    , 1     ) ,
             ('pt'    , np.float32 , 2     ) ,
+            # flag: `triangulated`
             ('tri'   , np.bool    , 1     ) ,
+            # visualization
             ('col'   , np.uint8   , 3     ) ,
-            ('track' , np.bool    , 1     )
             ])
 
     def build_observation(self):
@@ -119,13 +143,25 @@ class DB(object):
     @property
     def state(self):
         return self.state_
-
     @property
     def keyframe(self):
         kf_idx = np.nonzero(self.frame['is_kf'])[0]
         #print('keyframe index : {}'.format(kf_idx))
         return self.frame[kf_idx]
 
+    """ size """
+    @property
+    def n_frame(self):
+        return self.frame_.size
+    @property
+    def n_landmark(self):
+        return self.landmark_.size
+    @property
+    def n_observation(self):
+        return self.observation_.size
+
+    
+    """ persistence """
     def load(self, path):
         D_ = lambda p : os.path.join(path, p)
         print('Please wait while loading DB ...')
@@ -142,8 +178,7 @@ class DB(object):
         np.save(D_('landmark.npy'), self.landmark)
         np.save(D_('observation.npy'), self.observation)
         #np.save(D_('pose.npy'), self.frame['pose'])
-        #np.save(D_('map_pos.npy'), self.landmark['pos'])
-        #np.save(D_('map_col.npy'), self.landmark['col'])
+        #np.save(D_('map_pos.npy'), self.landmark['pos']) #np.save(D_('map_col.npy'), self.landmark['col'])
 
     def prune(self, src_idx=None, lmk_idx=None, obs_idx=None):
         # compute masks
@@ -194,9 +229,9 @@ class DB(object):
         #print self.landmark['index'][0]
         idx_lmk = np.unique(self.observation['lmk_idx'])
         n_lmk   = len(idx_lmk)
-        print 'pre', self.landmark[idx_lmk][:5]
+        # print 'pre', self.landmark[idx_lmk][:5]
         self.landmark_[:n_lmk] = self.landmark[idx_lmk].copy()
-        print 'post', self.landmark[:5]
+        # print 'post', self.landmark[:5]
         self.landmark_.resize(n_lmk)
         # remap_indices()
         map_lmk = np.empty(shape=(1 + self.landmark['index'].max()), dtype=np.int32)

@@ -225,16 +225,7 @@ class Pipeline(object):
         if not suc:
             return
 
-        n_src = self.initializer_.db_.frame_.size
-        n_lmk = self.initializer_.db_.landmark_.size
-        n_obs = self.initializer_.db_.observation_.size
-
-        #self.db_.frame_.resize(0)
-        self.db_.frame_.extend(self.initializer_.db_.frame_[:n_src])
-        #self.db_.landmark_.resize(0)
-        self.db_.landmark_.extend(self.initializer_.db_.landmark_[:n_lmk])
-        #self.db_.observation_.resize(0)
-        self.db_.observation_.extend(self.initializer_.db_.observation_[:n_obs])
+        self.db_.extend( self.initializer_.db_)
         self.transition( PipelineState.TRACK)
 
         #print self.db_.landmark_['pos'][self.db_.landmark_['tri']][:5]
@@ -376,6 +367,7 @@ class Pipeline(object):
         obs_lmk_idx = landmark['index'][landmark['track']]
 
         search_map = (
+                False and
                 len(cld0) <= 256 and
                 (msk_prj is not None) and
                 (msk_prj.sum() >= 16)
@@ -557,11 +549,11 @@ class Pipeline(object):
                 frame1['pose'][L_POS] = t.ravel()
                 frame1['pose'][A_POS] = tx.euler_from_matrix(R)
 
-            self.db_.observation.extend(zip(*[
-                    np.full_like(obs_lmk_idx, frame1['index']), # observation frame source
-                    obs_lmk_idx, # landmark index
-                    pt1
-                    ]))
+            self.db_.observation.extend(dict(
+                    src_idx=np.full_like(obs_lmk_idx, frame1['index']), # observation frame source
+                    lmk_idx=obs_lmk_idx, # landmark index
+                    point=pt1
+                    ))
         self.db_.frame.append( frame1 )
         x = 1
 
@@ -626,9 +618,7 @@ class Pipeline(object):
                             track   = np.ones(len(cld), dtype=np.bool) # tracking status
                             )
                     # hmm?
-                    self.db_.landmark.extend(zip(*[
-                        local_map[k] for k in self.db_.landmark.dtype.names]
-                        ))
+                    self.db_.landmark.extend(local_map)
                     break
             else:
                 print('Attempted new keyframe but failed')
