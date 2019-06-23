@@ -5,7 +5,7 @@ import numpy as np
 from filterpy.kalman import ExtendedKalmanFilter as EKF
 from filterpy.kalman import MerweScaledSigmaPoints, JulierSigmaPoints
 
-from expr import fx, anorm
+from .expr import fx, anorm
 
 def hx(s):
     return np.r_[s[0:3], s[9:12]]
@@ -102,7 +102,7 @@ def main():
     ekf.R = 1e-3 * np.eye(6)
 
     for i in range(1, len(data)):
-        print 'compare', ekf.x[3:6], data[i-1][3:6]
+        print('compare', ekf.x[3:6], data[i-1][3:6])
         ekf.predict( 0.1 )
         ekf.update( hx(data[i]) )
 

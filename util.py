@@ -3,17 +3,15 @@
 import cv2
 import cv_util as cvu
 import numpy as np
-from tf import transformations as tx
 from db import L_POS, L_VEL, L_ACC, A_POS, A_VEL
 from cho_util import vmath as vm
+from cho_util.math import transform as tx
 from sklearn.neighbors import NearestNeighbors
 
 def pose_to_xfm(pose):
     txn = pose[L_POS]
     rxn = pose[A_POS]
-    return tx.compose_matrix(
-            angles = rxn,
-            translate = txn)
+    return tx.compose(r=rxn, t=txn, rtype=tx.rotation.euler)
 
 def index_remap(idx):
     # source = (0, 0, 2, 2, 2)
@@ -35,7 +33,7 @@ def get_transform(source_frame, target_frame):
         xfm_s2m = pose_to_xfm( source_frame['pose'] )
 
     xfm_t2m = pose_to_xfm( target_frame['pose'] )
-    xfm_s2t = tx.inverse_matrix(xfm_t2m).dot(xfm_s2m)
+    xfm_s2t = tx.invert(xfm_t2m).dot(xfm_s2m)
 
     R = xfm_s2t[:3, :3]
     t = xfm_s2t[:3, 3:]
@@ -93,7 +91,7 @@ def non_max(pt, rsp,
     # radius_neighbors would be nice, but indexing is difficult to use
     # res = neigh.radius_neighbors(pt_new, return_distance=False)
     d, i = neigh.kneighbors(return_distance=True)
-    print len(i)
+    print(len(i))
     # TODO : `same_octave` condition
 
     # too far from other landmarks to apply non-max

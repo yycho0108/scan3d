@@ -4,9 +4,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from cho_util.viz.mpl import set_axes_equal
-from cho_util import vmath as vm
+from cho_util.math import transform as tx
 from cho_util.viz.draw import draw_points, draw_matches
-from tf import transformations as tx
 from db import DB
 from util import *
 
@@ -63,7 +62,7 @@ def draw_frame(ax, frame, db, cfg):
     # local cloud
     ax_cld = sub_axis(ax, [0.5, 0.0, 0.5, 1.0], projection='3d')
     xyz = transform_cloud(xyz, map_frame, frame)
-    xyz = vm.tx3( vm.tx.euler_matrix(-np.pi/2, 0, -np.pi/2), xyz)
+    xyz = tx.rotation.euler.rotate((-np.pi/2, 0, -np.pi/2), xyz)
     ax_cld.scatter(xyz[:,0], xyz[:,1], xyz[:,2],
             c = (col[...,::-1] / 255.0))
     ax_cld.view_init(elev=0, azim=180)
@@ -89,15 +88,15 @@ def draw_map(ax, frame, db, cfg):
     for fr in db.frame:
         xfm_pose = pose_to_xfm(fr['pose'])
         txn = tx.translation_from_matrix(xfm_pose)
-        rxn = tx.euler_from_matrix(xfm_pose)
+        rxn = tx.rotation.euler.from_matrix(xfm_pose)
         draw_pose(ax3, txn, rxn, alpha=0.02)
     draw_pose(ax3, frame['pose'][0:3], frame['pose'][9:12])
     set_axes_equal(ax3)
 
     # draw (2d)
-    T_R = vm.tx.euler_matrix(-np.pi/2, 0, -np.pi/2)
+    T_R = tx.euler.from_matrix(-np.pi/2, 0, -np.pi/2)
     ax2 = sub_axis(ax, [0.0, 0.5, 1.0, 0.5])
-    xyz = vm.tx3(T_R, xyz)
+    xyz = tx.rotation.matrix.rotate(T_R, xyz)
     ax2.scatter(xyz[:,0], xyz[:,1],
             s = 0.1,
             c = (col[...,::-1] / 255.0)
@@ -106,13 +105,13 @@ def draw_map(ax, frame, db, cfg):
         xfm_pose = pose_to_xfm(fr['pose'])
         r_xfm_pose = T_R.dot(xfm_pose)
         txn = tx.translation_from_matrix(r_xfm_pose)
-        rxn = tx.euler_from_matrix(r_xfm_pose)
+        rxn = tx.rotation.euler_from_matrix(r_xfm_pose)
         draw_pose(ax2, txn, rxn, alpha=0.02)
     fr = frame
     xfm_pose = pose_to_xfm(fr['pose'])
     r_xfm_pose = T_R.dot(xfm_pose)
     txn = tx.translation_from_matrix(r_xfm_pose)
-    rxn = tx.euler_from_matrix(r_xfm_pose)
+    rxn = tx.rotation.euler.from_matrix(r_xfm_pose)
     draw_pose(ax2, txn, rxn, alpha=1.0)
     ax2.set_aspect('equal')
 
@@ -125,7 +124,7 @@ def draw_pose(ax, p, a, s=0.1, style='-', alpha=1.0):
 
     o = p # translational origin
     V = np.eye(3) # orthogonal basis xyz
-    R = tx.euler_matrix(*a, axes='rzyx')
+    R = tx.rotation.euler.to_matrix(*a, axes='rzyx')
 
     ux, uy, uz = R[:3, :3].dot(V).T
     if draw_3d:
@@ -150,7 +149,7 @@ def main():
     fig = plt.figure(dpi=200)
 
     for frame in db.frame:
-        print frame['index']
+        print(frame['index'])
         fig.clf()
         ax = fig.gca()
         ax.cla()

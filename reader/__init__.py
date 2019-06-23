@@ -1,2 +1,2 @@
-from advio import AdvioReader
-from cvcam import CVCameraReader
+from .advio import AdvioReader
+from .cvcam import CVCameraReader

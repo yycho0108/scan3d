@@ -12,14 +12,21 @@ class NDRecord(object):
 
     def __init__(self, dtype, capacity=C0):
         dtype = np.dtype(dtype)
-        # assert protected attribute names
-        # for kwd in ['dtype_', 'size_', 'cap_', 'data_']:
-        #     assert(kwd not in dtype.names)
-
         self.dtype_ = dtype
         self.size_ = 0
         self.cap_ = capacity
         self.data_ = np.empty(self.cap_, dtype=self.dtype_)
+
+        # assert protected attribute names
+        # for kwd in ['dtype_', 'size_', 'cap_', 'data_']:
+        #     assert(kwd not in dtype.names)
+
+        # for n in self.dtype_.names:
+        #     print('n', n)
+        #     setattr(NDRecord, n, property(lambda self : self.data_[n]))
+
+        # if 'image' in self.dtype_.names:
+        #     print self.data_['image']
 
     def __len__(self):
         return self.size_
@@ -66,7 +73,7 @@ class NDRecord(object):
                 raise ValueError("Input format does not match : {} vs. {}".format(
                     recs.keys(), self.dtype_.names
                 ))
-            n_add = len(recs.values()[0])
+            n_add = len(recs[self.dtype_.names[0]])
             new_size = self.size_+n_add
             if (new_size >= self.cap_):
                 self.resize(max(2*self.cap_, new_size))
@@ -163,8 +170,8 @@ def test_dictrec():
     y.append(dict(
         a=15, b=16.0
     ))
-    print [v.dtype for v in y.data.values()]
-    print y.data
+    print([v.dtype for v in y.data.values()])
+    print(y.data)
 
     #y.extend([("xyz", 12, 3.2), ("abc", 100, 0.2)])
     #y.append(("123", 1000, 0))
@@ -177,7 +184,7 @@ def test_ndrec():
     y = NDRecord(('a4,int32,float64'))
     y.extend([("xyz", 12, 3.2), ("abc", 100, 0.2)])
     y.append(("123", 1000, 0))
-    print y.data
+    print(y.data)
     for i in xrange(100):
         y.append((str(i), i, i+0.1))
 
@@ -187,18 +194,18 @@ def test_ndrec():
         f2=[15.0, 12.3]
     ))
 
-    print '!!'
-    print y.data[-2:]
+    print ( '!!' )
+    print ( y.data[-2:] )
     y.help()
 
-    print y[:2]['f0']
-    print y['f0'][:2]
+    print ( y[:2]['f0'] )
+    print ( y['f0'][:2] )
 
     # slicing works either way
     y[:2]['f0'] = "x"
-    print y['f0'][:2]
+    print ( y['f0'][:2] )
     y['f0'][:2] = "a"
-    print y[:2]['f0']
+    print ( y[:2]['f0'] )
 
 
 def main():

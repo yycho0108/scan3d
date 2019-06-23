@@ -29,7 +29,7 @@ class Tracker(object):
     def track(self, 
             img1, img2,
             pt1, pt2=None,
-            thresh=2.0,
+            thresh=1.0,
             return_msk=False
             ):
         """

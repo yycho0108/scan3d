@@ -7,44 +7,67 @@ import pyqtgraph.opengl as gl
 from pyqtgraph.Qt import QtCore, QtGui
 from db import DB
 from db import L_POS, L_VEL, L_ACC, A_POS, A_VEL
-from optimize.rot import rpy_to_axa
+
 from cho_util import vmath as vm
+from cho_util.math import transform as tx
+from util import *
 
 from GLViewWidget import GLViewWidget
 #GLViewWidget = gl.GLViewWidget
 
+
 class Viewer(object):
-    def __init__(self):
+    def __init__(self, cfg):
         self.app_ = QtGui.QApplication(sys.argv)
         self.win_, self.panels_ = self.build_win()
+        self.cfg_ = cfg
 
     def on_frame(self, frame, db):
         #print('frame index : {}'.format(frame['index']))
-        self.win_.setWindowTitle('Frame {:04d}'.format(frame['index']) )
+        self.win_.setWindowTitle('Frame {:04d}'.format(frame['index']))
 
         # draw_image()
-        image = frame['image'].swapaxes(0,1)[..., ::-1] 
+        image = frame['image'].swapaxes(0, 1)[..., ::-1]
         self.panels_['img'].setImage(image)
 
         self.panels_['kpt'].setData(
-                pos = frame['feat'].pt)
+            pos=frame['feat'].pt)
 
         pt_obs = db.observation['point'][
-                (db.observation['src_idx'] ==  frame['index'])
-                ]
+            (db.observation['src_idx'] == frame['index'])
+        ]
         self.panels_['obs_pt'].setData(
-                pos = pt_obs)
+            pos=pt_obs)
+
+        map_frame = db.keyframe[0]
+        pt_prj = project_to_frame(db.landmark['pos'],
+                                  source_frame=map_frame,
+                                  target_frame=frame,  # TODO: keyframe may no longer be true?
+                                  K=self.cfg_['K'],
+                                  D=self.cfg_['D'])
+        prj_msk = np.logical_and.reduce([
+            0 <= pt_prj[:, 0],
+            pt_prj[:, 0] < self.cfg_['w'],
+            0 <= pt_prj[:, 1],
+            pt_prj[:, 1] < self.cfg_['h'],
+        ])
+        self.panels_['prj_pt'].setData(
+            pos=pt_prj[prj_msk],
+            #col=db.landmark['col'][prj_msk, ::-1] / 255.0
+        )
+        self.panels_['prj_pt'].setBrush(
+            [QtGui.QBrush(QtGui.QColor(*c)) for c in db.landmark['col'][prj_msk, ::-1]])
 
         # draw_cloud()
-        pos = db.landmark['pos']
-        col = db.landmark['col'][..., ::-1] / 255.0
-        print 'cmax', col.shape
+        msk = db.landmark['tri']
+        pos = db.landmark['pos'][msk]
+        col = db.landmark['col'][msk][..., ::-1] / 255.0
         self.panels_['cld'].setData(pos=pos, color=col)
 
         # draw_camera()
-        axa = rpy_to_axa(frame['pose'][A_POS])
-        h = vm.norm(axa)
-        u = axa / h
+        rxn = tx.rotation.euler.to_axis_angle(frame['pose'][A_POS])
+        u = rxn[:3]
+        h = rxn[3]
         self.panels_['cam'].resetTransform()
         self.panels_['cam'].rotate(np.rad2deg(h), u[0], u[1], u[2])
         self.panels_['cam'].translate(*frame['pose'][L_POS])
@@ -66,15 +89,20 @@ class Viewer(object):
 
         # (frame) detected keypoints
         sp = pg.ScatterPlotItem()
-        sp.setBrush(QtGui.QBrush( QtGui.QColor(255,0,0)))
+        sp.setBrush(QtGui.QBrush(QtGui.QColor(255, 0, 0)))
         imvw.addItem(sp)
         panels['kpt'] = sp
 
         # observed keypoints
         sp = pg.ScatterPlotItem()
-        sp.setBrush(QtGui.QBrush( QtGui.QColor(0,0,255)))
+        sp.setBrush(QtGui.QBrush(QtGui.QColor(0, 0, 255)))
         imvw.addItem(sp)
         panels['obs_pt'] = sp
+
+        # projected landmark keypoints
+        sp = pg.ScatterPlotItem()
+        imvw.addItem(sp)
+        panels['prj_pt'] = sp
 
         # cloud 3d view
         glvw = GLViewWidget()
@@ -83,7 +111,8 @@ class Viewer(object):
         sp_cld = gl.GLScatterPlotItem()
         glvw.addItem(sp_cld)
         panels['cld'] = sp_cld
-        glvw.setCameraPosition(rotation=QtGui.QQuaternion.fromEulerAngles(90,0,90).conjugated())
+        glvw.setCameraPosition(
+            rotation=QtGui.QQuaternion.fromEulerAngles(90, 0, 90).conjugated())
 
         # map origin
         gx = gl.GLAxisItem()
@@ -117,13 +146,14 @@ class Viewer(object):
         self.win_.show()
         self.app_.exec_()
 
+
 class DBViewer(object):
     def __init__(self, db, cfg):
-        self.db_     = db
-        self.cfg_    = cfg
-        self.viewer_ = Viewer()
-        self.index_  = 0
-        self.auto_   = True
+        self.db_ = db
+        self.cfg_ = cfg
+        self.viewer_ = Viewer(cfg)
+        self.index_ = 0
+        self.auto_ = True
         self.change_ = False
 
     def start(self):
@@ -149,6 +179,7 @@ class DBViewer(object):
         self.start()
         self.viewer_.show()
 
+
 def main():
     ex = False
     if ex:
@@ -157,6 +188,7 @@ def main():
         db = DB(path='/tmp/db')
         cfg = np.load('/tmp/db/config.npy').item()
         DBViewer(db, cfg).run()
+
 
 if __name__ == '__main__':
     main()

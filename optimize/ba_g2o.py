@@ -2,7 +2,7 @@
 import numpy as np
 import g2o
 
-class BundleAdjustment(g2o.SparseOptimizer):
+class BAOptimizer(g2o.SparseOptimizer):
     def __init__(self, ):
         super().__init__()
         solver = g2o.BlockSolverSE3(g2o.LinearSolverCSparseSE3())
@@ -21,7 +21,7 @@ class BundleAdjustment(g2o.SparseOptimizer):
         v_se3.set_id(pose_id * 2)   # internal id
         v_se3.set_estimate(sbacam)
         v_se3.set_fixed(fixed)
-        super().add_vertex(v_se3) 
+        super().add_vertex(v_se3)
 
     def add_point(self, point_id, point, fixed=False, marginalized=True):
         v_p = g2o.VertexSBAPointXYZ()
@@ -31,10 +31,10 @@ class BundleAdjustment(g2o.SparseOptimizer):
         v_p.set_fixed(fixed)
         super().add_vertex(v_p)
 
-    def add_edge(self, point_id, pose_id, 
-            measurement,
-            information=np.identity(2),
-            robust_kernel=g2o.RobustKernelHuber(np.sqrt(5.991))):   # 95% CI
+    def add_edge(self, point_id, pose_id,
+                 measurement,
+                 information=np.identity(2),
+                 robust_kernel=g2o.RobustKernelHuber(np.sqrt(5.991))):   # 95% CI
 
         edge = g2o.EdgeProjectP2MC()
         edge.set_vertex(0, self.vertex(point_id * 2 + 1))
@@ -51,3 +51,27 @@ class BundleAdjustment(g2o.SparseOptimizer):
 
     def get_point(self, point_id):
         return self.vertex(point_id * 2 + 1).estimate()
+
+
+class BundleAdjustment(object):
+    def __init__(self,
+                 i_src, i_lmk, p_obs,
+                 txn, rxn, lmk,
+                 K,
+                 pose_only=False,
+                 invd=False,
+                 axa=False):
+        pass
+
+    def compute(self):
+        opt = BAOptimizer()
+
+        # initial values
+        txn, rxn = self.txn_, self.rxn_
+        lmk      = self.lmk_
+
+        txn, rxn = self.invert(txn, rxn) # pose -> transform
+        for (t,r) in zip(self.txn_, self.rxn_):
+            opt.add_pose(
+        
+        pass

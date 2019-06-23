@@ -1,5 +1,6 @@
 #!/usr/bin/env python2
-import cv2
+import cv2 as cv2
+
 import numpy as np
 from cho_util import vmath as vm
 from collections import namedtuple
@@ -247,6 +248,12 @@ class TwoView(object):
         """ PnP Validation """
         # print _['cld1'].shape
         # print _['pt0'].shape
+
+        cld_nan = (np.any(np.isnan(_['cld1']) ))
+        pt_nan = (np.any(np.isnan(_['pt0']) ))
+
+        if cld_nan or pt_nan:
+            return False, 0
         suc, rvec, tvec, inl = cv2.solvePnPRansac(
                 _['cld1'][:,None], _['pt0'][:,None],
                 _['K'], None,
@@ -393,5 +400,5 @@ class TwoView(object):
                 det['parallax'], n_pgood, crit['t_min'],
                 det['pnp_suc'], pnp_in, n_pt
                 )
-        suc = np.logical_and.reduce(det.values())
+        suc = np.logical_and.reduce(list(det.values()))
         return suc, det

@@ -120,9 +120,9 @@ def fx(state, dt):
 def main():
     state = np.random.normal(size=15)
     delta = 0.5
-    print state
+    print ( state )
     state, J = fx(state, delta)
-    print state
+    print ( state )
 
 if __name__ == '__main__':
     main()

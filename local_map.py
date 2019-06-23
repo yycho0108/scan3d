@@ -5,6 +5,7 @@ from db import DB
 from twoview import TwoView
 from util import *
 from cho_util.viz import draw_matches, draw_points, print_ratio
+from cho_util.math import transform as tx
 from optimize.ba import BundleAdjustment
 
 class MapInitializer(object):
@@ -54,18 +55,15 @@ class MapInitializer(object):
                 pos     = pos, # landmark position [[ map frame ]]
                 track   = np.ones(n_pt, dtype=np.bool), # tracking status
                 pt      = feat.pt, # tracking point initialization
-                tri     = np.ones(n_pt, dtype=np.bool), # **NOT** triangulated?
+                tri     = np.zeros(n_pt, dtype=np.bool), # **NOT** triangulated?
                 col     = col, # debug : point color information
                 )
-        # TODO : something more efficient than zip(*[]) ... ?
-        self.db_.landmark.extend(zip(*[
-            entry[k] for k in self.db_.landmark.dtype.names]
-            ))
-        self.db_.observation.extend(zip(*[
-                    np.full(n_pt, frame['index']), # observation frame source
-                    np.arange(n_pt), # landmark index
-                    feat.pt # observed point location
-                    ]))
+        self.db_.landmark.extend(entry)
+        self.db_.observation.extend(dict(
+                    src_idx=np.full(n_pt, frame['index']), # observation frame source
+                    lmk_idx=np.arange(n_pt), # landmark index
+                    point=feat.pt # observed point location
+                    ))
 
     def track(self, frame):
         # unroll data
@@ -88,11 +86,11 @@ class MapInitializer(object):
         lmk_idx = landmark['index'][landmark['track']]
 
         # update observation
-        self.db_.observation.extend(zip(*[
-                    np.full_like(lmk_idx, frame['index']), # observation frame source
-                    lmk_idx, # landmark index
-                    pt1 # observed point location
-                    ]))
+        self.db_.observation.extend(dict(
+                    src_idx=np.full_like(lmk_idx, frame['index']), # observation frame source
+                    lmk_idx=lmk_idx, # landmark index
+                    point=pt1[msk_t] # observed point location
+                    ))
 
         # report tracking status
         # TODO : maybe skip redundant compute upon failure
@@ -123,7 +121,7 @@ class MapInitializer(object):
         suc = BundleAdjustment(
                 i_src, i_lmk, p_obs,
                 txn, rxn, lmk, self.cfg_['K'],
-                axa=True).compute(data = data_ba)
+                axa=True, invd=False).compute(data = data_ba)
 
         if suc:
             txn = data_ba['txn']
@@ -138,8 +136,6 @@ class MapInitializer(object):
         # data.update( data_ba )
 
     def optimize(self):
-        # TODO: run bundle adjustment here ...
-
         # 1. get rid of `useless` landmarks
         lmk_idx = np.nonzero(self.db_.landmark['track'])[0]
         #lmk_idx = np.nonzero(self.db_.landmark['tri'])[0]
@@ -206,8 +202,10 @@ class MapInitializer(object):
         # assign frame-data results
         R   = data['R']
         t   = data['t']
+        print('t------------->', t)
         cur_frame['pose'][L_POS] = t.ravel()
-        cur_frame['pose'][A_POS] = tx.euler_from_matrix(R)
+        print('R', R)
+        cur_frame['pose'][A_POS] = tx.rotation.euler.from_matrix(R)
 
         #print 'hmmm.................'
         #print ref_frame['index']

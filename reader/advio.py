@@ -41,7 +41,7 @@ class AdvioReader(object):
                 delimiter=','
                 )[:,0]
         self.pos_ = 0
-        assert( self.cap_.get(cv2.CAP_PROP_FRAME_COUNT) == len(self.stamp_) )
+        # assert( self.cap_.get(cv2.CAP_PROP_FRAME_COUNT) == len(self.stamp_) )
 
     def parse(self, _={}):
         """ 
@@ -151,6 +151,7 @@ def main():
         k = cv2.waitKey(1)
         if k in [27, ord('q')]:
             break
+    print('done')
 
 if __name__ == '__main__':
     main()

@@ -249,7 +249,7 @@ def main():
     d = (pt1[i1] - pt2[i2]) + (roll_j, roll_i)
     tol = 5.0
     msk = (np.linalg.norm(d, axis=-1) < tol)
-    print msk.sum(), msk.size
+    print(msk.sum(), msk.size)
 
     mim = draw_matches(img1, img2,
             pt1[i1], pt2[i2])

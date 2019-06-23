@@ -1,9 +1,9 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 from enum import Enum
 import numpy as np
 import cv2
-import pptk
+#import pptk
 import time
 import os
 
@@ -14,9 +14,9 @@ from match import Matcher, match_local
 from kalman.ekf import build_ekf
 from cho_util.viz import draw_matches, draw_points, print_ratio
 from cho_util import vmath as vm
+from cho_util.math import transform as tx
 from cho_util.viz.mpl import set_axes_equal
 import cv_util as cvu
-from tf import transformations as tx
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -29,7 +29,6 @@ from optimize.ba import BundleAdjustment
 from profilehooks import profile
 
 from util import *
-from optimize.rot import axa_to_q, q_to_axa, rpy_to_q, q_to_rpy
 
 from local_map import MapInitializer
 
@@ -145,8 +144,8 @@ class Pipeline(object):
             # simple `repetition` model
             txn0, rxn0 = f0['pose'][L_POS], f0['pose'][A_POS]
             txn1, rxn1 = f1['pose'][L_POS], f1['pose'][A_POS]
-            R0 = tx.euler_matrix(*rxn0)
-            R1 = tx.euler_matrix(*rxn1)
+            R0 = tx.rotation.euler.to_matrix(*rxn0)
+            R1 = tx.rotation.euler.to_matrix(*rxn1)
 
             T0 = tx.compose_matrix(angles=rxn0, translate=txn0)
             T1 = tx.compose_matrix(angles=rxn1, translate=txn1)
@@ -155,7 +154,7 @@ class Pipeline(object):
             T2 = np.dot(Tv, T1)
 
             txn = tx.translation_from_matrix(T2)
-            rxn = tx.euler_from_matrix(T2)
+            rxn = tx.rotation.euler.from_matrix(T2)
 
             x = f1['pose'].copy()
             P = f1['cov'].copy()
@@ -233,9 +232,6 @@ class Pipeline(object):
         self.db_.extend(self.initializer_.db_)
         self.transition(PipelineState.TRACK)
 
-        #print self.db_.landmark_['pos'][self.db_.landmark_['tri']][:5]
-        #print self.initializer_.db_.landmark_['pos'][self.db_.landmark_['tri']][:5]
-
         if True:
             frame0 = self.db_.frame_[0]
             frame1 = self.db_.frame_[1]
@@ -267,7 +263,7 @@ class Pipeline(object):
         return
 
     def bundle_adjust(self, frame0, frame1):
-        idx0, idx1 = max(frame0['index'], frame1['index']-8), frame1['index']
+        idx0, idx1 = frame0['index'], frame1['index']
         #idx0, idx1 = keyframe['index'], frame1['index']
         obs = self.db_.observation
         msk = np.logical_and(
@@ -300,7 +296,7 @@ class Pipeline(object):
         suc = BundleAdjustment(
             i_src, i_lmk, p_obs,  # << observation
             txn, rxn, lmk, self.cfg_['K'],
-            axa=True
+            axa=True, invd=False
         ).compute(data=data_ba)       # << data
 
         if suc:
@@ -314,7 +310,6 @@ class Pipeline(object):
             self.db_.frame['pose'][i_a2s[i_src_alt], A_POS] = rxn
             self.db_.landmark['pos'][i_a2l[i_lmk_alt]] = lmk
 
-    @profile(sort='cumtime')
     def track(self, img, stamp, data={}):
         """ Track landmarks"""
         # unroll data
@@ -426,10 +421,11 @@ class Pipeline(object):
         #inl = None
         #print 'euler', tx.euler_from_matrix(cv2.Rodrigues(rvec)[0])
 
-        T_i = tx.inverse_matrix(
-            tx.compose_matrix(
-                translate=frame1['pose'][L_POS],
-                angles=frame1['pose'][A_POS]
+        T_i = tx.invert(
+            tx.compose(
+                r=frame1['pose'][A_POS],
+                t=frame1['pose'][L_POS],
+                rtype=tx.rotation.euler
             ))
         rvec0 = cv2.Rodrigues(T_i[:3, :3])[0]
         tvec0 = T_i[:3, 3:]
@@ -461,7 +457,7 @@ class Pipeline(object):
                 lmk=cld_pnp,
                 K=self.cfg_['K'],
                 pose_only=True).compute(
-                crit=dict(loss='soft_l1', xtol=1e-8, f_scale=np.sqrt(5.991)),
+                #crit=dict(loss='soft_l1', xtol=1e-8, f_scale=np.sqrt(5.991)),
                 data=data_pnp)
             #print('txn-out', data_pnp['txn'][0])
             #print('rxn-out', data_pnp['rxn'][0])
@@ -505,8 +501,8 @@ class Pipeline(object):
         n_pnp_in = len(cld_pnp)
         n_pnp_out = len(inl) if (inl is not None) else 0
         #print 'inl', inl
-        print n_pnp_in
-        print n_pnp_out
+        print ( n_pnp_in )
+        print ( n_pnp_out )
 
         suc = (suc and (inl is not None) and (
             n_pnp_out >= 128 or n_pnp_out >= 0.25 * n_pnp_in))
@@ -535,7 +531,7 @@ class Pipeline(object):
         R = cv2.Rodrigues(rvec)[0]
         t = np.float32(tvec)
         R, t = vm.Rti(R, t)
-        rxn = np.reshape(tx.euler_from_matrix(R), 3)
+        rxn = np.reshape(tx.rotation.euler.from_matrix(R), 3)
         txn = t.ravel()
 
         if suc:
@@ -574,7 +570,7 @@ class Pipeline(object):
         #need_kf = False
 
         # ?? better criteria for running BA?
-        run_ba = (frame1['index'] % 8) == 0
+        run_ba = (frame1['index'] % 32) == 0
         #run_ba = False
         #run_ba = need_kf
 
@@ -628,8 +624,8 @@ class Pipeline(object):
 
                         # tracking point initialization
                         pt0=feat1.pt[mi1][msk_cld],
-                        invd=1.0 / cld1[..., 2],
-                        depth=cld1[..., 2],
+                        invd=1.0 / cld1[..., 2], # NOTE: cld1, not cld
+                        depth=cld1[..., 2],# NOTE: cld1, not cld
 
                         pos=cld,  # landmark position [[ map frame ]]
                         # tracking status
@@ -649,10 +645,6 @@ class Pipeline(object):
     def process(self, img, stamp, data={}):
         if self.state_ == PipelineState.IDLE:
             return
-        # if self.state_ == PipelineState.NEED_REF:
-        #     return self.init_ref(img, stamp, data)
-        # elif self.state_ == PipelineState.NEED_MAP:
-        #     return self.init_map(img, stamp, data)
         if self.state_ == PipelineState.INIT:
             return self.init_map(img, stamp, data)  # self.initializer_.compute(
         elif self.state_ == PipelineState.TRACK:
@@ -666,7 +658,7 @@ class Pipeline(object):
         np.save(D_('config.npy'), self.cfg_)
         self.db_.save(path)
 
-
+@profile(sort='cumtime')
 def main():
     #src = './scan_20190212-233625.h264'
     #reader = CVCameraReader(src, K=CFG['K'])
@@ -681,7 +673,7 @@ def main():
     auto = True
 
     pl = Pipeline(cfg=cfg)
-    cv2.namedWindow('viz', cv2.WINDOW_NORMAL)
+    # cv2.namedWindow('viz', cv2.WINDOW_NORMAL)
     while True:
         suc, idx, stamp, img = reader.read()
         #cv2.imshow('img', img)
@@ -695,6 +687,7 @@ def main():
         # except Exception as e:
         #    print('Exception while processing: {}'.format(e))
         #    break
+
         if 'viz' in data:
             cv2.imshow('viz', data['viz'])
         k = cv2.waitKey(1 if auto else 0)
@@ -707,7 +700,7 @@ def main():
             cld = data['cld_viz']
             col = data['col_viz']
             # optical -> base
-            cld = vm.tx3(vm.tx.euler_matrix(-np.pi/2, 0, -np.pi/2), cld)
+            cld = tx.rotation.euler.rotate([-np.pi/2, 0, -np.pi/2], cld)
             ax = plt.gca(projection='3d')
             ax.cla()
             ax.scatter(cld[:, 0], cld[:, 1], cld[:, 2],

@@ -1,6 +1,6 @@
 #!/usr/bin/env python2
 import numpy as np
-from tf import transformations as tx
+import transformations as tx
 
 def axa_to_q(axa):
     """ axis-angle to quaternion """
@@ -59,7 +59,7 @@ def q_to_rpy(q):
     hx   = np.arctan2(r21 * schy, r22 * schy)
 
     is_gimbal = np.less(np.abs(np.abs(r20) - 1.0), 1.0e-6)
-    print 'isg', is_gimbal.sum()
+    print ('isg', is_gimbal.sum())
 
     return np.stack([hx,hy,hz], axis=-1)
 
@@ -99,8 +99,8 @@ def main():
     i2 = np.argmax(d2)
     i3 = np.argmax(d3)
 
-    print q[i2], q2[i2], d2[i2]
-    print q[i3], q2[i3], d2[i3]
+    print (q[i2], q2[i2], d2[i2])
+    print (q[i3], q2[i3], d2[i3])
 
 if __name__ == '__main__':
     main()

@@ -3,32 +3,36 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix, csr_matrix
 from cho_util import vmath as vm
-from cho_util.math import transform as tx
-from cho_util import math as cm
 from autograd import jacobian
 from autograd import numpy as anp
-from .expr import project, project_axa, project_invd, project_axa_invd
+from expr import project, project_axa, Projector
 
 from profilehooks import profile
-from .rot import axa_to_q, q_to_axa, rpy_to_q, q_to_rpy
+from rot import axa_to_q, q_to_axa, rpy_to_q, q_to_rpy
 
 class BundleAdjustment(object):
     """
     Bundle Adjustment!
 
     """
+    # static dimensions
+    D_OBS = 2
+    D_TXN = 3
+    D_RXN = 3
+    D_LMK = 1
+
     def __init__(self,
             i_src, i_lmk, p_obs,
             txn, rxn, lmk,
             K,
             pose_only=False,
-            invd=False,
+            invd_parm=False,
             axa=False
             ):
         self.crit_ = dict(
                 ftol=1e-4,
                 xtol=1e-4,
-                loss='cauchy',
+                loss='soft_l1',
                 max_nfev=1024,
                 method='trf',
                 verbose=2,
@@ -36,7 +40,6 @@ class BundleAdjustment(object):
                 f_scale=np.sqrt(5.991)
                 )
         self.pose_only_ = pose_only
-        self.invd_      = False if pose_only else invd
         self.axa_       = axa
 
         # input - observation
@@ -51,10 +54,6 @@ class BundleAdjustment(object):
 
         # input - parameters
         self.K_ = K
-        self.d_lmk_ = (4 if self.invd_ else 3)
-        self.d_txn_ = (3)
-        self.d_rxn_ = (3) # TODO : maybe use quat?
-        self.d_obs_ = (2)
 
         # derived data
         self.n_src_ = 1+np.max(i_src, initial=-1)
@@ -69,12 +68,11 @@ class BundleAdjustment(object):
         # automatic differentiation?
         #self.jacobian = jacobian(lambda x : self.residual(x, np=anp))
 
+
+
     def invert(self, txn, rxn):
-        Ti = tx.invert(tx.compose(r=rxn, t=txn, rtype=tx.rotation.euler))
-
-        txn = tx.translation_from_matrix(Ti)
-        rxn = tx.rotation.euler.from_matrix(Ti)
-
+        Ti = [vm.tx.inverse_matrix(vm.tx.compose_matrix(translate=t, angles=r)) for (t, r) in zip(txn, rxn)]
+        txn, rxn = zip(*[( vm.tx.translation_from_matrix(T), vm.tx.euler_from_matrix(T) ) for T in Ti])
         txn = np.float32(txn)
         rxn = np.float32(rxn)
         return txn, rxn
@@ -88,47 +86,40 @@ class BundleAdjustment(object):
     #@staticmethod
     def unroll(self, params, n_src, n_lmk):
         i0 = 0
-        i1 = (i0 + self.d_txn_ * n_src)
-        i2 = (i1 + self.d_rxn_ * n_src)
-        txn = params[i0:i1].reshape(-1,self.d_txn_)
-        rxn = params[i1:i2].reshape(-1,self.d_rxn_)
+        i1 = (i0 + BundleAdjustment.D_TXN * n_src)
+        i2 = (i1 + BundleAdjustment.D_RXN * n_src)
+        txn = params[i0:i1].reshape(-1,3)
+        rxn = params[i1:i2].reshape(-1,3)
 
         if self.pose_only_:
             return txn, rxn, self.lmk_
 
-        i3 = (i2 + self.d_lmk_ * n_lmk)
-        lmk = params[i2:i3].reshape(-1,self.d_lmk_)
+        i3 = (i2 + BundleAdjustment.D_LMK * n_lmk)
+        lmk = params[i2:i3].reshape(-1,3)
         return txn, rxn, lmk
 
     #@staticmethod
-    def parametrize(self, txn, rxn, lmk):
+    def parametrize(self, txn, rxn):
         # RPY -> Rodrigues
         if self.axa_:
             rxn = q_to_axa(rpy_to_q(rxn))
-        if self.invd_:
-            # convert to inverse depth parametrization, subject to norm==1
-            # but skip viewpoint thingy and see how it goes ... ?
-            lmk = tx.to_homogeneous(lmk)
-            lmk /= cm.norm(lmk, keepdims=True)
-        return txn, rxn, lmk
+        return txn, rxn
 
     #@staticmethod
-    def unparametrize(self, txn, rxn, lmk):
+    def unparametrize(self, txn, rxn):
         # Rodrigues -> RPY
         if self.axa_:
             rxn = q_to_rpy(axa_to_q(rxn))
-        if self.invd_:
-            lmk = tx.from_homogeneous(lmk)
-        return txn, rxn, lmk
+        return txn, rxn
 
     def jacobian(self, params):
         txn, rxn, lmk = self.unroll(params, self.n_src_, self.n_lmk_)
         jac_txn, jac_rxn, jac_lmk = self.project(params, jac=True)
 
-        n_out = self.n_obs_*self.d_obs_
-        n_in  = self.n_src_*(self.d_rxn_ + self.d_txn_)
+        n_out = self.n_obs_*BundleAdjustment.D_OBS
+        n_in  = self.n_src_*(BundleAdjustment.D_RXN + BundleAdjustment.D_TXN)
         if not self.pose_only_:
-            n_in += self.n_lmk_*(self.d_lmk_)
+            n_in += self.n_lmk_*(BundleAdjustment.D_LMK)
         
         j_shape = (n_out, n_in)
 
@@ -141,27 +132,48 @@ class BundleAdjustment(object):
         r_i = []
         c_i = []
         v   = [] 
-        for i_o in range(self.d_obs_): # iterate over point (x,y)
-            for i_c in range(self.d_txn_): # iterate over txn-3
-                r_i.append(i_obs*self.d_obs_+i_o)
-                c_i.append(self.i_src_*self.d_txn_+i_c)
+        for i_o in range(self.D_OBS): # iterate over point (x,y)
+            for i_c in range(self.D_TXN): # iterate over txn-3
+                r_i.append(i_obs*self.D_OBS+i_o)
+                c_i.append(self.i_src_*self.D_TXN+i_c)
                 v  .append(jac_txn[:,i_o,i_c])
-            for i_c in range(self.d_rxn_): # iterate over rxn-3
-                r_i.append(i_obs*self.d_obs_+i_o)
-                c_i.append((self.n_src_*self.d_txn_)+self.i_src_*self.d_rxn_+i_c)
+            for i_c in range(self.D_RXN): # iterate over rxn-3
+                r_i.append(i_obs*self.D_OBS+i_o)
+                c_i.append((self.n_src_*self.D_TXN)+self.i_src_*self.D_RXN+i_c)
                 v  .append(jac_rxn[:,i_o,i_c])
 
             if self.pose_only_:
                 continue
 
-            for i_l in range(self.d_lmk_): # iterate over landmark-3
-                r_i.append(i_obs*self.d_obs_+i_o)
-                c_i.append((self.n_src_*self.d_txn_+self.n_src_*self.d_rxn_)+self.i_lmk_*self.d_lmk_+i_l)
+            for i_l in range(self.D_LMK): # iterate over landmark-3
+                r_i.append(i_obs*self.D_OBS+i_o)
+                c_i.append((self.n_src_*self.D_TXN+self.n_src_*self.D_RXN)+self.i_lmk_*self.D_LMK+i_l)
                 v  .append(jac_lmk[:,i_o,i_l])
         r_i = np.concatenate(r_i)
         c_i = np.concatenate(c_i)
         v   = np.concatenate(v)
         res = csr_matrix((v, (r_i, c_i)), shape=(n_out, n_in))
+
+        # print('res', res.todense())
+        # res1 = res.todense()
+        # res = np.zeros(shape=j_shape, dtype=np.float32)
+        # j0_shape = (self.n_obs_, BundleAdjustment.D_OBS, n_in)
+        # tmp = res.reshape(j0_shape)
+        # txn_end = self.n_src_*BundleAdjustment.D_TXN
+        # rxn_end = txn_end + self.n_src_ * BundleAdjustment.D_RXN
+        # res_txn = tmp[..., :txn_end]
+        # res_rxn = tmp[..., txn_end:rxn_end]
+        # res_lmk = tmp[..., rxn_end:]
+        # res_txn = res_txn.reshape(self.n_obs_, BundleAdjustment.D_OBS, self.n_src_, BundleAdjustment.D_TXN)
+        # res_txn[i_obs,:,self.i_src_] += jac_txn
+        # res_rxn = res_rxn.reshape(self.n_obs_, BundleAdjustment.D_OBS, self.n_src_, BundleAdjustment.D_RXN)
+        # res_rxn[i_obs,:,self.i_src_] += jac_rxn
+        # res_lmk = res_lmk.reshape(self.n_obs_, BundleAdjustment.D_OBS, self.n_lmk_, BundleAdjustment.D_LMK)
+        # res_lmk[i_obs,:,self.i_lmk_] += jac_lmk
+        # res2 = res
+        # print res1[:3, :3]
+        # print res2[:3, :3]
+        # print 'jacobian error', np.square(res1 - res2).sum()
 
         return res
 
@@ -174,16 +186,10 @@ class BundleAdjustment(object):
         lmk = lmk[self.i_lmk_]
 
         # project
-        if self.invd_:
-            if self.axa_:
-                res = project_axa_invd(txn,rxn,lmk,self.K_, np=np, jac=jac)
-            else:
-                res = project_invd(txn,rxn,lmk,self.K_, np=np, jac=jac)
+        if self.axa_:
+            res = project_axa(txn,rxn,lmk,self.K_, np=np, jac=jac)
         else:
-            if self.axa_:
-                res = project_axa(txn,rxn,lmk,self.K_, np=np, jac=jac)
-            else:
-                res = project(txn,rxn,lmk,self.K_, np=np, jac=jac)
+            res = project(txn,rxn,lmk,self.K_, np=np, jac=jac)
 
         #data = {}
         #res = Projector(txn,rxn,lmk,self.K_).compute(np=np, jac=jac, data=data)
@@ -193,9 +199,7 @@ class BundleAdjustment(object):
     def residual(self, params, np=np):
         p_prj = self.project(params, np=np, jac=False)
         p_prj = np.stack(p_prj,axis=-1)
-        d = (p_prj - self.p_obs_).ravel()
-        #d[np.abs(d) > 10.0] *= 0 # ignore outliers ...
-        return d
+        return (p_prj - self.p_obs_).ravel()
 
     #@profile
     def compute(self, crit={}, data={}):
@@ -216,7 +220,7 @@ class BundleAdjustment(object):
 
         # parametrize
         txn, rxn = self.invert(txn, rxn) # pose -> transform
-        txn, rxn, lmk = self.parametrize(txn, rxn, lmk)
+        txn, rxn = self.parametrize(txn, rxn)
         x0 = self.roll(txn, rxn, lmk)
 
         res = least_squares(
@@ -230,7 +234,7 @@ class BundleAdjustment(object):
 
         # un-parametrize
         txn, rxn, lmk = self.unroll(res.x, self.n_src_, self.n_lmk_)
-        txn, rxn, lmk = self.unparametrize(txn, rxn, lmk)
+        txn, rxn = self.unparametrize(txn, rxn)
         txn, rxn = self.invert(txn, rxn) # transform -> pose
 
         data['txn'] = txn

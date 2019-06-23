@@ -16,15 +16,10 @@ A_POS = np.s_[9:12]
 A_VEL = np.s_[12:15]
 
 # two of the most useful conversions ...
-
-
 def lpos_from_pose(pose):
     return pose[..., L_POS]
-
-
 def apos_from_pose(pose):
     return pose[..., A_POS]
-
 
 class DB(object):
     """
@@ -66,11 +61,6 @@ class DB(object):
             if (dsc_fmt is not None):
                 self.landmark_ = self.build_landmark(dsc_fmt)
             self.observation_ = self.build_observation()
-            # current frame state
-            self.state_ = {
-                'track': [],
-                'path': []
-            }
 
         # report construction status
         data = (self.frame_, self.landmark_, self.observation_)
@@ -152,10 +142,6 @@ class DB(object):
         return self.observation_
 
     @property
-    def state(self):
-        return self.state_
-
-    @property
     def keyframe(self):
         kf_idx = np.nonzero(self.frame['is_kf'])[0]
         #print('keyframe index : {}'.format(kf_idx))
@@ -216,10 +202,6 @@ class DB(object):
             # keep all
             msk_obs = np.ones(self.observation_.size, dtype=np.bool)
 
-        #print msk_src.shape
-        #print msk_lmk.shape
-        #print msk_obs.shape
-
         msk = np.logical_and.reduce([
             msk_src, msk_lmk, msk_obs
         ])
@@ -238,6 +220,7 @@ class DB(object):
             shape=(1 + self.frame['index'].max()), dtype=np.int32)
         map_src[idx_src] = np.arange(n_src)
         self.observation_['src_idx'] = map_src[self.observation_['src_idx']]
+        self.landmark_['src'] = map_src[self.landmark_['src']]
         self.frame['index'] = np.arange(n_src)
 
         # == handle landmark ==
@@ -255,7 +238,6 @@ class DB(object):
         map_lmk[idx_lmk] = np.arange(n_lmk)
         self.observation_['lmk_idx'] = map_lmk[self.observation_['lmk_idx']]
         self.landmark['index'] = np.arange(n_lmk)
-
 
 def main():
     ex = cv2.ORB_create()

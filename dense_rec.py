@@ -4,7 +4,8 @@ import numpy as np
 import cv2
 import cv_util as cvu
 from reader.advio import AdvioReader
-from cho_util import vmath as vm
+from cho_util import math as cm
+from cho_util.math import transform as tx
 from cho_util.viz.draw import draw_matches, flow_to_image
 from cho_util.viz.mpl import set_axes_equal
 from twoview import TwoView
@@ -15,9 +16,13 @@ from mpl_toolkits.mplot3d import Axes3D
 class DenseRec(object):
     def __init__(self, K):
         self.K_ = K
-        self.opt_ = cv2.optflow.createOptFlow_DIS(
-                cv2.optflow.DISOPTICAL_FLOW_PRESET_MEDIUM
+        self.opt_ = cv2.DISOpticalFlow_create(
+                cv2.DISOpticalFlow_PRESET_MEDIUM
                 )
+        #print(dir(cv2.create))
+        #self.opt_ = cv2.optflow.createOptFlow_DIS(
+        #        cv2.optflow.DISOPTICAL_FLOW_PRESET_MEDIUM
+        #        )
 
     def filter(self, pt0, pt1):
         try:
@@ -83,9 +88,9 @@ class DenseRec(object):
         # WARNING : only use this for debugging.
         if (P1 is None and P2 is None):
             suc, det = TwoView(pt0, pt1, self.K_).compute(data=data)
-            print data['dbg-tv']
             if not suc:
                 return None
+            print ( data['dbg-tv'] )
             R = np.float32( data['R'] )
             t = np.float32( data['t'] )
 
@@ -99,7 +104,7 @@ class DenseRec(object):
             cld = cvu.triangulate_points(self.K_.dot(P2), self.K_.dot(P1), pt1, pt0)
             msk = np.ones(len(pt0), dtype=np.bool)
 
-        idx = vm.rint(pt1[msk][...,::-1])
+        idx = cm.rint(pt1[msk][...,::-1])
         idx = np.clip(idx, (0,0), (h-1,w-1))
         col = img2[idx[:,0], idx[:,1]]
 
@@ -108,7 +113,7 @@ class DenseRec(object):
 
 def main():
     root = '/media/ssd/datasets/ADVIO'
-    reader = AdvioReader(root, idx=15)
+    reader = AdvioReader(root, idx=2)
     reader.set_pos(0)
     rec = DenseRec(K = reader.meta_['K'])
 
@@ -156,7 +161,7 @@ def main():
 
             ax = plt.subplot2grid((2,4), (0,1), 2, 2, projection='3d')
             ax.cla()
-            cld = vm.tx3( vm.tx.euler_matrix(-np.pi/2, 0, -np.pi/2), cld)
+            cld = tx.rotation.euler.rotate([-np.pi/2,0,-np.pi/2], cld)
             ax.scatter(cld[:,0], cld[:,1], cld[:,2]
                     ,c = (col[...,::-1] / 255.0)
                     )
